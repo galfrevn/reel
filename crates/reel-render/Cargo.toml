@@ -1,8 +1,20 @@
 [package]
 name = "reel-render"
+description = "Rasterizer and compositor: snapshots + timeline in, RGBA frames out"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
+reel-term = { workspace = true }
+reel-timeline = { workspace = true }
+reel-format = { workspace = true }
+swash = "0.2"
+tiny-skia = "0.12"
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+reel-cast = { path = "../reel-cast" }
