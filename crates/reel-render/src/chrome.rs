@@ -58,9 +58,11 @@ pub fn layout(tpl: &Template, term_w: u32, term_h: u32, s: f32) -> Layout {
     }
 }
 
-/// Composites one frame: canvas bg, shadow, window, chrome, terminal content.
-pub fn compose(tpl: &Template, theme: &Theme, term: &Pixmap, s: f32) -> Pixmap {
-    let l = layout(tpl, term.width(), term.height(), s);
+/// Everything that doesn't change frame to frame: canvas bg, shadow, window
+/// body, titlebar, border. Expensive (the shadow blur especially) — compute
+/// once per size and reuse.
+pub fn compose_base(tpl: &Template, theme: &Theme, term_w: u32, term_h: u32, s: f32) -> Pixmap {
+    let l = layout(tpl, term_w, term_h, s);
     let mut canvas = Pixmap::new(l.canvas_w, l.canvas_h).expect("canvas pixmap");
 
     draw_canvas_bg(&mut canvas, &tpl.canvas);
@@ -79,7 +81,13 @@ pub fn compose(tpl: &Template, theme: &Theme, term: &Pixmap, s: f32) -> Pixmap {
             stroke_rounded(&mut canvas, l.win_x, l.win_y, l.win_w, l.win_h, radius, border, s);
         }
     }
+    canvas
+}
 
+/// Composites one frame onto a clone of the cached base.
+pub fn compose_over(base: &Pixmap, tpl: &Template, term: &Pixmap, s: f32) -> Pixmap {
+    let l = layout(tpl, term.width(), term.height(), s);
+    let mut canvas = base.clone();
     canvas.draw_pixmap(
         l.term_x.round() as i32,
         l.term_y.round() as i32,
@@ -89,6 +97,12 @@ pub fn compose(tpl: &Template, theme: &Theme, term: &Pixmap, s: f32) -> Pixmap {
         None,
     );
     canvas
+}
+
+/// One-shot compose (tests, single frames).
+pub fn compose(tpl: &Template, theme: &Theme, term: &Pixmap, s: f32) -> Pixmap {
+    let base = compose_base(tpl, theme, term.width(), term.height(), s);
+    compose_over(&base, tpl, term, s)
 }
 
 fn draw_canvas_bg(canvas: &mut Pixmap, bg: &CanvasBg) {

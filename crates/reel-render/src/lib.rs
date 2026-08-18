@@ -88,11 +88,13 @@ pub fn settings_from_config(cfg: &ReelConfig) -> Result<(RenderSettings, Vec<Str
 pub struct Renderer {
     pub settings: RenderSettings,
     raster: Rasterizer,
+    /// Cached static chrome (canvas bg + shadow + window) keyed by term size.
+    chrome_base: Option<((u32, u32), Pixmap)>,
 }
 
 impl Renderer {
     pub fn new(settings: RenderSettings) -> Self {
-        Renderer { settings, raster: Rasterizer::new() }
+        Renderer { settings, raster: Rasterizer::new(), chrome_base: None }
     }
 
     fn base_font_px(&self) -> f32 {
@@ -168,7 +170,13 @@ impl Renderer {
             chrome::dim_except(&mut term, rect, 0.55);
         }
 
-        let mut canvas = chrome::compose(&tpl, &theme, &term, s);
+        let key = (term.width(), term.height());
+        if self.chrome_base.as_ref().map(|(k, _)| *k) != Some(key) {
+            let base = chrome::compose_base(&tpl, &theme, term.width(), term.height(), s);
+            self.chrome_base = Some((key, base));
+        }
+        let base = &self.chrome_base.as_ref().unwrap().1;
+        let mut canvas = chrome::compose_over(base, &tpl, &term, s);
 
         for cap in &frame.captions {
             self.draw_caption(&mut canvas, &cap.text, cap.pos, s);
@@ -221,6 +229,16 @@ impl Renderer {
             pen_x += m.cell_w;
         }
     }
+}
+
+/// Premultiplied pixmap → straight RGBA bytes (what encoders expect).
+pub fn pixmap_to_rgba(pix: &Pixmap) -> Vec<u8> {
+    let mut out = Vec::with_capacity(pix.pixels().len() * 4);
+    for p in pix.pixels() {
+        let c = p.demultiply();
+        out.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+    }
+    out
 }
 
 fn crop(src: &Pixmap, x: i32, y: i32, w: u32, h: u32) -> Pixmap {

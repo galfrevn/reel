@@ -1,8 +1,13 @@
 [package]
 name = "reel-encode"
+description = "GIF and PNG encoders with exact-palette and delta-rect strategies"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
+gif = "0.14"
+color_quant = "2"
+png = "0.18"
+thiserror = { workspace = true }

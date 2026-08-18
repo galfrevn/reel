@@ -1,0 +1,17 @@
+---
+[source]
+cast = "demo.cast"
+
+[template]
+name = "glass"
+
+[output]
+file   = "demo.gif"
+budget = "900kb"
+---
+
+# The spinner runs ~4.5s — compress it like an agent's thinking pause.
+speed   3x from 2.2s to 6.6s
+caption "Spinner compressed 3x" at 3s for 2s
+zoom    1.6x at (14,8) from 7.9s to 9.4s
+freeze  last 1.2s
