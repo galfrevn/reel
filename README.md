@@ -105,7 +105,7 @@ reel themes           # list built-in themes
 
 ## Let your agent do it
 
-You don't have to learn any of the above. reel ships an [agent skill](skills/reel-demo/SKILL.md)
+You don't have to learn any of the above. reel ships an [agent skill](skills/reel/SKILL.md)
 so coding agents (Claude Code, Cursor, etc.) can produce the demo for you —
 record once, then ask for "a README GIF under 800kb with the boring part sped
 up" and the agent handles inspection, editing, and rendering. Install it with

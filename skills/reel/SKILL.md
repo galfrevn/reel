@@ -1,5 +1,5 @@
 ---
-name: reel-demo
+name: reel
 description: Turn terminal recordings into polished, shareable demo GIFs using the reel CLI — record a session once with asciinema, then edit it like video (trim dead air, cut mistakes, speed-ramp slow parts, zoom, caption) and render a styled, size-budgeted GIF without ever re-running the program. Use this skill whenever the user wants a demo of their CLI or TUI, a GIF for a README, launch tweet, or docs, wants to shorten/clean up/restyle a terminal recording, mentions asciinema or .cast files, or asks to "record my terminal" or "make a demo" of a command-line tool — even if they never mention reel by name.
 ---
 
