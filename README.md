@@ -93,6 +93,18 @@ reel themes           # list built-in themes
   ladder with a report of what it chose
 - Zoom re-rasterizes glyphs at the target size — text stays sharp
 
+## Let your agent do it
+
+You don't have to learn any of the above. reel ships an [agent skill](skills/reel-demo/SKILL.md)
+so coding agents (Claude Code, Cursor, etc.) can produce the demo for you —
+record once, then ask for "a README GIF under 800kb with the boring part sped
+up" and the agent handles inspection, editing, and rendering. Install it with
+[skills.sh](https://skills.sh):
+
+```sh
+npx skills add galfrevn/reel
+```
+
 ## Building
 
 ```sh
