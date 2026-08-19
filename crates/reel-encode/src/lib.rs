@@ -83,7 +83,7 @@ pub fn encode_gif(frames: &[RgbaFrame], opts: &GifOptions) -> Result<GifReport, 
         }
     }
 
-    let (palette_rgb, index_fn, mode): (Vec<u8>, Box<dyn Fn(&[u8]) -> u8>, PaletteMode) = if exact
+    let (palette_rgb, mut index_fn, mode): (Vec<u8>, Box<dyn FnMut(&[u8]) -> u8>, PaletteMode) = if exact
     {
         let mut palette = vec![0u8; color_set.len() * 3];
         for (rgb, idx) in &color_set {
@@ -114,9 +114,16 @@ pub fn encode_gif(frames: &[RgbaFrame], opts: &GifOptions) -> Result<GifReport, 
         let nq = color_quant::NeuQuant::new(10, max_colors as usize, &samples);
         let map = nq.color_map_rgb();
         let n = (map.len() / 3) as u16;
+        // index_of is a search; terminal frames repeat a few thousand
+        // distinct RGBs, so memoizing makes indexing effectively free.
+        let mut memo: HashMap<[u8; 3], u8> = HashMap::new();
         (
             map,
-            Box::new(move |px: &[u8]| nq.index_of(&[px[0], px[1], px[2], 255]) as u8),
+            Box::new(move |px: &[u8]| {
+                *memo
+                    .entry([px[0], px[1], px[2]])
+                    .or_insert_with(|| nq.index_of(&[px[0], px[1], px[2], 255]) as u8)
+            }),
             PaletteMode::Quantized(n),
         )
     };
@@ -124,7 +131,7 @@ pub fn encode_gif(frames: &[RgbaFrame], opts: &GifOptions) -> Result<GifReport, 
     // --- Index all frames --------------------------------------------------
     let indexed: Vec<Vec<u8>> = frames
         .iter()
-        .map(|f| f.data.chunks_exact(4).map(&index_fn).collect())
+        .map(|f| f.data.chunks_exact(4).map(&mut index_fn).collect())
         .collect();
 
     // --- Write, with delta rectangles --------------------------------------

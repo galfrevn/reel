@@ -56,6 +56,9 @@ the editor:
 - Raw-render size: ~10% over agg at comparable settings; worth a look at
   per-frame palette locality before calling it done.
 - Gradient-canvas templates (e.g. `glass`) push GIF output past the exact
-  256-color palette and into quantization; the spec's planned mitigation
-  (auto-flatten the canvas for GIF targets, with a warning) is not yet
-  implemented.
+  256-color palette and into quantization; reel currently warns rather than
+  auto-flattening (the spec's §7.1 mitigation).
+- The exact-palette path fires less often than the spec assumed: glyph
+  antialiasing alone generates hundreds of fg→bg blend shades at scale 2.
+  Real fix: quantize AA ramps to a fixed number of levels per color pair so
+  themed content genuinely stays under 256 colors.

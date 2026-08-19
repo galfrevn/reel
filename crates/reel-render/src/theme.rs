@@ -128,7 +128,7 @@ pub fn builtin(name: &str) -> Option<Theme> {
         "geist-dark" => Theme {
             name: "geist-dark",
             fg: hex("#ededed"),
-            bg: hex("#0a0a0a"),
+            bg: hex("#000000"),
             cursor: hex("#ededed"),
             ansi: [
                 hex("#1a1a1a"), hex("#e5484d"), hex("#45a557"), hex("#f5a623"),

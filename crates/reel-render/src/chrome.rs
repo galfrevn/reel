@@ -3,7 +3,7 @@
 //! border, and the terminal content itself.
 
 use crate::raster::{fill_rect, premul};
-use crate::template::{CanvasBg, Template, WindowStyle};
+use crate::template::{CanvasBg, Template, Titlebar, WindowStyle};
 use crate::theme::{Rgba, Theme};
 use tiny_skia::{
     FillRule, GradientStop, LinearGradient, Paint, PathBuilder, Pixmap, PixmapPaint, Point,
@@ -32,9 +32,10 @@ pub struct Layout {
 pub fn layout(tpl: &Template, term_w: u32, term_h: u32, s: f32) -> Layout {
     let padding = tpl.padding * s;
     let inset = tpl.inset * s;
-    let titlebar_h = match tpl.window {
-        WindowStyle::MacOs => TITLEBAR_H * s,
-        _ => 0.0,
+    let titlebar_h = if tpl.window != WindowStyle::None && tpl.titlebar != Titlebar::None {
+        TITLEBAR_H * s
+    } else {
+        0.0
     };
     let (win_w, win_h) = match tpl.window {
         WindowStyle::None => (term_w as f32, term_h as f32),
@@ -74,8 +75,29 @@ pub fn compose_base(tpl: &Template, theme: &Theme, term_w: u32, term_h: u32, s: 
         }
         // Window body in the theme background so padding blends with content.
         fill_rounded(&mut canvas, l.win_x, l.win_y, l.win_w, l.win_h, radius, theme.bg);
-        if tpl.window == WindowStyle::MacOs {
-            draw_traffic_lights(&mut canvas, &l, s);
+        match tpl.titlebar {
+            Titlebar::TrafficLights => draw_dots(
+                &mut canvas,
+                &l,
+                s,
+                &[Rgba::rgb(0xff, 0x5f, 0x57), Rgba::rgb(0xfe, 0xbc, 0x2e), Rgba::rgb(0x28, 0xc8, 0x40)],
+            ),
+            Titlebar::Dots => {
+                let dot = Rgba::rgb(0x44, 0x44, 0x44);
+                draw_dots(&mut canvas, &l, s, &[dot, dot, dot]);
+            }
+            Titlebar::None => {}
+        }
+        if tpl.titlebar_rule && l.titlebar_h > 0.0 {
+            let rule = tpl.border.unwrap_or(Rgba { r: 255, g: 255, b: 255, a: 0x14 });
+            crate::raster::fill_rect(
+                &mut canvas,
+                l.win_x.round() as i32,
+                (l.win_y + l.titlebar_h).round() as i32,
+                l.win_w.round() as i32,
+                (1.0 * s).round().max(1.0) as i32,
+                rule,
+            );
         }
         if let Some(border) = tpl.border {
             stroke_rounded(&mut canvas, l.win_x, l.win_y, l.win_w, l.win_h, radius, border, s);
@@ -179,8 +201,7 @@ fn stroke_rounded(canvas: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, r: f32, c
     canvas.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
 }
 
-fn draw_traffic_lights(canvas: &mut Pixmap, l: &Layout, s: f32) {
-    let colors = [Rgba::rgb(0xff, 0x5f, 0x57), Rgba::rgb(0xfe, 0xbc, 0x2e), Rgba::rgb(0x28, 0xc8, 0x40)];
+fn draw_dots(canvas: &mut Pixmap, l: &Layout, s: f32, colors: &[Rgba; 3]) {
     let r = 6.0 * s;
     let cy = l.win_y + l.titlebar_h / 2.0;
     for (i, c) in colors.iter().enumerate() {

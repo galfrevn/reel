@@ -17,6 +17,16 @@ pub enum WindowStyle {
     None,
 }
 
+/// Titlebar decoration, independent of the window shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Titlebar {
+    None,
+    /// macOS red/amber/green buttons.
+    TrafficLights,
+    /// Monochrome gray dots (the Vercel-docs look).
+    Dots,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum CanvasBg {
     Solid(Rgba),
@@ -41,6 +51,9 @@ pub struct Template {
     pub font_size: f32,
     pub line_height: f32,
     pub window: WindowStyle,
+    pub titlebar: Titlebar,
+    /// Hairline rule between the titlebar and the content.
+    pub titlebar_rule: bool,
     pub corner_radius: f32,
     /// Space between the window edge and the terminal content.
     pub padding: f32,
@@ -66,6 +79,8 @@ pub fn builtin(name: &str) -> Option<Template> {
             font_size: 16.0,
             line_height: 1.35,
             window: WindowStyle::Plain,
+            titlebar: Titlebar::None,
+            titlebar_rule: false,
             corner_radius: 0.0,
             padding: 24.0,
             inset: 24.0,
@@ -81,6 +96,8 @@ pub fn builtin(name: &str) -> Option<Template> {
             font_size: 17.0,
             line_height: 1.45,
             window: WindowStyle::MacOs,
+            titlebar: Titlebar::TrafficLights,
+            titlebar_rule: false,
             corner_radius: 14.0,
             padding: 28.0,
             inset: 48.0,
@@ -96,6 +113,8 @@ pub fn builtin(name: &str) -> Option<Template> {
             font_size: 16.0,
             line_height: 1.3,
             window: WindowStyle::None,
+            titlebar: Titlebar::None,
+            titlebar_rule: false,
             corner_radius: 0.0,
             padding: 12.0,
             inset: 0.0,
@@ -109,14 +128,16 @@ pub fn builtin(name: &str) -> Option<Template> {
             theme: "geist-dark",
             family: Family::GeistMono,
             font_size: 15.0,
-            line_height: 1.5,
+            line_height: 1.55,
             window: WindowStyle::Rounded,
-            corner_radius: 8.0,
-            padding: 30.0,
-            inset: 44.0,
+            titlebar: Titlebar::Dots,
+            titlebar_rule: true,
+            corner_radius: 12.0,
+            padding: 34.0,
+            inset: 26.0,
             canvas: CanvasBg::Solid(hex("#000000")),
-            shadow: Some(Shadow { blur: 34.0, opacity: 0.6, offset_y: 10.0 }),
-            border: Some(hex("#ffffff1f")),
+            shadow: None,
+            border: Some(hex("#ffffff2e")),
         },
         "paper" => Template {
             name: "paper",
@@ -126,6 +147,8 @@ pub fn builtin(name: &str) -> Option<Template> {
             font_size: 16.0,
             line_height: 1.4,
             window: WindowStyle::Rounded,
+            titlebar: Titlebar::None,
+            titlebar_rule: false,
             corner_radius: 10.0,
             padding: 24.0,
             inset: 40.0,
