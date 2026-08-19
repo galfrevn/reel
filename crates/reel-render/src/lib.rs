@@ -97,6 +97,13 @@ impl Renderer {
         Renderer { settings, raster: Rasterizer::new(), chrome_base: None }
     }
 
+    /// Swaps settings while keeping the glyph cache warm (it's keyed by
+    /// glyph/size, independent of theme or template). Used by `reel watch`.
+    pub fn set_settings(&mut self, settings: RenderSettings) {
+        self.settings = settings;
+        self.chrome_base = None;
+    }
+
     fn base_font_px(&self) -> f32 {
         self.settings.template.font_size * self.settings.scale
     }

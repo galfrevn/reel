@@ -19,6 +19,21 @@ struct Loaded {
     base_dir: PathBuf,
 }
 
+/// State kept between `reel watch` renders: replayed snapshots keyed by cast
+/// mtime, and a renderer whose glyph cache stays warm across edits.
+#[derive(Default)]
+pub struct WatchCache {
+    cast: Option<(PathBuf, std::time::SystemTime, Cast, Vec<Snapshot>)>,
+    renderer: Option<Renderer>,
+}
+
+pub struct WatchRender {
+    pub bytes: Vec<u8>,
+    pub out_path: PathBuf,
+    pub cast_path: PathBuf,
+    pub extension: String,
+}
+
 fn load(path: &Path, template_override: Option<String>, quiet: bool) -> Result<Loaded> {
     let base_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut file = if path.extension().is_some_and(|e| e == "cast") {
@@ -322,6 +337,89 @@ pub fn inspect(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Watch-mode render: returns the encoded bytes (for the preview server)
+/// as well as writing the output file. Reuses cached snapshots when the cast
+/// is unchanged and keeps the renderer's glyph cache warm across edits.
+pub fn render_for_watch(
+    path: &Path,
+    out: Option<PathBuf>,
+    template: Option<String>,
+    cache: &mut WatchCache,
+) -> Result<WatchRender> {
+    let base_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut file = ReelFile::parse(&text).with_context(|| format!("parsing {}", path.display()))?;
+    if let Some(t) = template {
+        file.config.template.name = t;
+    }
+
+    let cast_path = base_dir.join(&file.config.source.as_ref().unwrap().cast);
+    let mtime = std::fs::metadata(&cast_path)
+        .and_then(|m| m.modified())
+        .with_context(|| format!("stat {}", cast_path.display()))?;
+
+    let reuse = matches!(&cache.cast, Some((p, t, _, _)) if *p == cast_path && *t == mtime);
+    if !reuse {
+        let cast = Cast::load(&cast_path)
+            .with_context(|| format!("loading cast {}", cast_path.display()))?;
+        let snapshots = reel_term::replay(&cast)?;
+        if !uniform_dims(&snapshots) {
+            bail!("this cast resizes mid-session, which reel can't render yet");
+        }
+        cache.cast = Some((cast_path.clone(), mtime, cast, snapshots));
+    }
+    let (_, _, cast, snapshots) = cache.cast.as_ref().unwrap();
+
+    let program = file.resolve(cast.duration())?;
+    let (timeline, _) = Timeline::compile(&program.edits, cast.duration())?;
+
+    let (settings, _) = settings_from_config(&file.config)?;
+    let fps = settings.fps;
+    match cache.renderer.as_mut() {
+        Some(r) => r.set_settings(settings),
+        None => cache.renderer = Some(Renderer::new(settings)),
+    }
+    let renderer = cache.renderer.as_mut().unwrap();
+
+    let frames = plan(&timeline, snapshots, &program.visuals, fps);
+    let mut rgba = Vec::with_capacity(frames.len());
+    for f in &frames {
+        let pix = renderer.render_frame(&snapshots[f.snapshot], f);
+        rgba.push(RgbaFrame {
+            width: pix.width(),
+            height: pix.height(),
+            data: pixmap_to_rgba(&pix),
+            duration_s: f.dur,
+        });
+    }
+
+    let out_path = out
+        .or_else(|| file.config.output.file.as_ref().map(|f| base_dir.join(f)))
+        .unwrap_or_else(|| path.with_extension("gif"));
+    let extension = out_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_else(|| "gif".into());
+
+    let bytes = match extension.as_str() {
+        "png" => {
+            let f = rgba.first().ok_or_else(|| anyhow!("no frames"))?;
+            reel_encode::encode_png(f.width, f.height, &f.data)?
+        }
+        _ => {
+            reel_encode::encode_gif(
+                &rgba,
+                &GifOptions { looping: file.config.output.looping, max_colors: 256 },
+            )?
+            .bytes
+        }
+    };
+    std::fs::write(&out_path, &bytes)?;
+    Ok(WatchRender { bytes, out_path, cast_path: cast_path.clone(), extension })
+}
+
 fn print_warnings(warnings: &[String], quiet: bool) {
     if !quiet {
         for w in warnings {
@@ -338,7 +436,7 @@ fn done(path: &Path, quiet: bool) -> Result<()> {
     Ok(())
 }
 
-fn human_size(bytes: u64) -> String {
+pub fn human_size(bytes: u64) -> String {
     if bytes >= 1_000_000 {
         format!("{:.2}MB", bytes as f64 / 1_000_000.0)
     } else {

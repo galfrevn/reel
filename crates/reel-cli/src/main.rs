@@ -1,4 +1,5 @@
 mod pipeline;
+mod watch;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -37,6 +38,17 @@ enum Command {
         /// Suppress progress output
         #[arg(long, short)]
         quiet: bool,
+    },
+    /// Re-render on save; optionally serve a live browser preview
+    Watch {
+        file: PathBuf,
+        #[arg(long, short)]
+        out: Option<PathBuf>,
+        #[arg(long)]
+        template: Option<String>,
+        /// Serve a live preview at http://127.0.0.1:PORT/
+        #[arg(long, value_name = "PORT", num_args = 0..=1, default_missing_value = "4171")]
+        serve: Option<u16>,
     },
     /// Render a single frame to PNG
     Shot {
@@ -77,6 +89,7 @@ fn run() -> Result<()> {
         Command::Render { file, out, template, budget, scale, quiet } => {
             pipeline::render(&file, out, template, budget, scale, quiet)
         }
+        Command::Watch { file, out, template, serve } => watch::watch(&file, out, template, serve),
         Command::Shot { file, at, out, template } => pipeline::shot(&file, &at, out, template),
         Command::Inspect { file } => pipeline::inspect(&file),
         Command::Init { template, out } => init(&template, &out),

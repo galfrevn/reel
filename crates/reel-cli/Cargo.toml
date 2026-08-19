@@ -19,3 +19,4 @@ reel-render = { workspace = true }
 reel-encode = { workspace = true }
 anyhow = { workspace = true }
 clap = { version = "4", features = ["derive"] }
+notify = "8"
