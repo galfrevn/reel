@@ -1,0 +1,3 @@
+target/
+*.gif
+!docs/**/*.gif

@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/reel-cast",
+    "crates/reel-term",
+    "crates/reel-timeline",
+    "crates/reel-format",
+    "crates/reel-render",
+    "crates/reel-encode",
+    "crates/reel-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/galfrevn/reel"
+
+[workspace.dependencies]
+reel-cast = { path = "crates/reel-cast" }
+reel-term = { path = "crates/reel-term" }
+reel-timeline = { path = "crates/reel-timeline" }
+reel-format = { path = "crates/reel-format" }
+reel-render = { path = "crates/reel-render" }
+reel-encode = { path = "crates/reel-encode" }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+[profile.release]
+lto = "thin"
+strip = true

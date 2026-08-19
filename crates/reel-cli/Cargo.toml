@@ -1,0 +1,22 @@
+[package]
+name = "reel-cli"
+description = "reel — your terminal demo, edited like video"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "reel"
+path = "src/main.rs"
+
+[dependencies]
+reel-cast = { workspace = true }
+reel-term = { workspace = true }
+reel-timeline = { workspace = true }
+reel-format = { workspace = true }
+reel-render = { workspace = true }
+reel-encode = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+notify = "8"
