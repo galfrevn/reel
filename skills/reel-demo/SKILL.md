@@ -21,7 +21,7 @@ things you can't do: performing the live session, and judging taste.
 Check for the tools; install whichever is missing:
 
 ```sh
-reel --version      || cargo install --git https://github.com/galfrevn/reel reel-cli
+reel --version      || curl -fsSL https://raw.githubusercontent.com/galfrevn/reel/main/setup.sh | bash
 asciinema --version || brew install asciinema   # or: pipx install asciinema
 ```
 

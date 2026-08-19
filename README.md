@@ -23,6 +23,16 @@ The hard rule: **capture and render never touch.** Once a session is recorded,
 the program is never executed again. Changing the theme, font, template, zoom,
 or edits is a pure re-render — no LLM re-runs, no flaky re-recordings.
 
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/galfrevn/reel/main/setup.sh | bash
+```
+
+Grabs a prebuilt binary when one exists for your platform, otherwise builds
+from source with cargo. (`reel.sh/setup.sh` will point here once the domain
+is live.)
+
 ## Quick start
 
 ```sh
