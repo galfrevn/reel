@@ -12,7 +12,7 @@ pub use template::{Template, WindowStyle};
 pub use theme::{Rgba, Theme};
 pub use tiny_skia::Pixmap;
 
-use font::{GlyphPixels, Rasterizer, Variant};
+use font::{Family, GlyphPixels, Rasterizer, Variant};
 use raster::GridStyle;
 use reel_format::ReelConfig;
 use reel_term::Snapshot;
@@ -60,11 +60,14 @@ pub fn settings_from_config(cfg: &ReelConfig) -> Result<(RenderSettings, Vec<Str
             template::parse_window_style(w).ok_or_else(|| RenderError::UnknownWindow(w.clone()))?;
     }
     if let Some(f) = &style.font {
-        if !f.eq_ignore_ascii_case("JetBrains Mono")
-            && !f.eq_ignore_ascii_case("JetBrains Mono NL")
-        {
+        let lower = f.to_ascii_lowercase();
+        if lower.contains("geist") {
+            tpl.family = Family::GeistMono;
+        } else if lower.contains("jetbrains") {
+            tpl.family = Family::JetBrainsMono;
+        } else {
             warnings.push(format!(
-                "font `{f}` is not available yet — only the embedded JetBrains Mono NL ships in this version"
+                "font `{f}` is not available — embedded families are JetBrains Mono NL and Geist Mono"
             ));
         }
     }
@@ -110,10 +113,11 @@ impl Renderer {
 
     /// Terminal image size in pixels for a given grid.
     pub fn term_size(&mut self, cols: u16, rows: u16) -> (u32, u32) {
-        let m = self
-            .raster
-            .fonts
-            .cell_metrics(self.base_font_px(), self.settings.template.line_height);
+        let m = self.raster.fonts.cell_metrics(
+            self.settings.template.family,
+            self.base_font_px(),
+            self.settings.template.line_height,
+        );
         (
             (cols as f32 * m.cell_w).ceil() as u32,
             (rows as f32 * m.cell_h).ceil() as u32,
@@ -133,7 +137,7 @@ impl Renderer {
         let tpl = self.settings.template.clone();
         let theme = self.settings.theme.clone();
         let base_px = self.base_font_px();
-        let base_m = self.raster.fonts.cell_metrics(base_px, tpl.line_height);
+        let base_m = self.raster.fonts.cell_metrics(tpl.family, base_px, tpl.line_height);
         let term_w = (snap.cols as f32 * base_m.cell_w).ceil() as u32;
         let term_h = (snap.rows as f32 * base_m.cell_h).ceil() as u32;
 
@@ -143,11 +147,11 @@ impl Renderer {
             // Re-rasterize at the zoomed size so text stays sharp — never
             // upscale pixels.
             let zoom_px = base_px * z as f32;
-            let zm = self.raster.fonts.cell_metrics(zoom_px, tpl.line_height);
+            let zm = self.raster.fonts.cell_metrics(tpl.family, zoom_px, tpl.line_height);
             let big = raster::raster_grid(
                 &mut self.raster,
                 snap,
-                &GridStyle { theme: &theme, font_size: zoom_px, line_height: tpl.line_height },
+                &GridStyle { theme: &theme, family: tpl.family, font_size: zoom_px, line_height: tpl.line_height },
             );
             let cx = (frame.camera.center.0 as f32 + 0.5) * zm.cell_w;
             let cy = (frame.camera.center.1 as f32 + 0.5) * zm.cell_h;
@@ -162,7 +166,7 @@ impl Renderer {
             let pix = raster::raster_grid(
                 &mut self.raster,
                 snap,
-                &GridStyle { theme: &theme, font_size: base_px, line_height: tpl.line_height },
+                &GridStyle { theme: &theme, family: tpl.family, font_size: base_px, line_height: tpl.line_height },
             );
             (pix, (0, 0), (base_m.cell_w, base_m.cell_h))
         };
@@ -193,7 +197,8 @@ impl Renderer {
 
     fn draw_caption(&mut self, canvas: &mut Pixmap, text: &str, pos: CaptionPos, s: f32) {
         let size = (self.settings.template.font_size * 0.95 * s).max(10.0);
-        let m = self.raster.fonts.cell_metrics(size, 1.0);
+        let family = self.settings.template.family;
+        let m = self.raster.fonts.cell_metrics(family, size, 1.0);
         let text_w: f32 = text.chars().count() as f32 * m.cell_w;
         let pad_x = 14.0 * s;
         let pad_y = 8.0 * s;
@@ -221,7 +226,7 @@ impl Renderer {
         let mut pen_x = x + pad_x;
         let baseline_y = y + pad_y + m.baseline;
         for chr in text.chars() {
-            if let Some(g) = self.raster.glyph(chr, Variant::Bold, size) {
+            if let Some(g) = self.raster.glyph(chr, family, Variant::Bold, size) {
                 let gx = pen_x.round() as i32 + g.left;
                 let gy = baseline_y.round() as i32 - g.top;
                 match &g.pixels {

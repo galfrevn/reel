@@ -21,6 +21,17 @@ static FONT_ITALIC: &[u8] =
     include_bytes!("../../../assets/fonts/JetBrainsMonoNLNerdFont-Italic.ttf");
 static FONT_BOLD_ITALIC: &[u8] =
     include_bytes!("../../../assets/fonts/JetBrainsMonoNLNerdFont-BoldItalic.ttf");
+static GEIST_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/geist/GeistMono-Regular.ttf");
+static GEIST_BOLD: &[u8] = include_bytes!("../../../assets/fonts/geist/GeistMono-Bold.ttf");
+
+/// Embedded font family. JetBrains Mono NL Nerd Font is the universal
+/// fallback: any glyph a family lacks (PUA icons especially) resolves there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Family {
+    #[default]
+    JetBrainsMono = 0,
+    GeistMono = 1,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Variant {
@@ -43,6 +54,8 @@ impl Variant {
 
 pub struct FontSet {
     fonts: [FontRef<'static>; 4],
+    /// Geist Mono ships Regular and Bold only; italic styles fall back.
+    geist: [FontRef<'static>; 2],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -65,27 +78,43 @@ impl FontSet {
                 load(FONT_ITALIC),
                 load(FONT_BOLD_ITALIC),
             ],
+            geist: [load(GEIST_REGULAR), load(GEIST_BOLD)],
         }
     }
 
-    pub fn font(&self, v: Variant) -> FontRef<'static> {
-        self.fonts[v as usize]
+    pub fn font(&self, family: Family, v: Variant) -> FontRef<'static> {
+        match family {
+            Family::JetBrainsMono => self.fonts[v as usize],
+            // Geist has no italics: Italic → Regular, BoldItalic → Bold.
+            Family::GeistMono => {
+                let bold = matches!(v, Variant::Bold | Variant::BoldItalic);
+                self.geist[bold as usize]
+            }
+        }
     }
 
-    /// Maps a char to (variant-adjusted) glyph id; falls back to Regular when
-    /// a styled variant lacks the codepoint (common for PUA icons in Bold).
-    pub fn glyph(&self, ch: char, v: Variant) -> Option<(Variant, u16)> {
-        let id = self.font(v).charmap().map(ch);
-        if id != 0 {
-            return Some((v, id));
+    /// Maps a char to a glyph, walking the fallback chain: requested
+    /// family+variant → family regular → JetBrains Mono NF variant →
+    /// JetBrains Mono NF regular (which carries the PUA icon set).
+    pub fn glyph(&self, ch: char, family: Family, v: Variant) -> Option<(Family, Variant, u16)> {
+        let chain: [(Family, Variant); 4] = [
+            (family, v),
+            (family, Variant::Regular),
+            (Family::JetBrainsMono, v),
+            (Family::JetBrainsMono, Variant::Regular),
+        ];
+        for (f, var) in chain {
+            let id = self.font(f, var).charmap().map(ch);
+            if id != 0 {
+                return Some((f, var, id));
+            }
         }
-        let id = self.font(Variant::Regular).charmap().map(ch);
-        (id != 0).then_some((Variant::Regular, id))
+        None
     }
 
     /// Grid metrics for a given font size in pixels.
-    pub fn cell_metrics(&self, font_size: f32, line_height: f32) -> CellMetrics {
-        let font = self.font(Variant::Regular);
+    pub fn cell_metrics(&self, family: Family, font_size: f32, line_height: f32) -> CellMetrics {
+        let font = self.font(family, Variant::Regular);
         let m = font.metrics(&[]).scale(font_size);
         let gm = font.glyph_metrics(&[]).scale(font_size);
         let m_id = font.charmap().map('M');
@@ -116,6 +145,7 @@ pub enum GlyphPixels {
 
 #[derive(PartialEq, Eq, Hash)]
 struct GlyphKey {
+    family: Family,
     variant: Variant,
     glyph: u16,
     /// Size quantized to 1/16 px so animated zoom doesn't explode the cache.
@@ -139,12 +169,18 @@ impl Rasterizer {
     }
 
     /// Rasterizes (or fetches) a glyph at `size` px.
-    pub fn glyph(&mut self, ch: char, variant: Variant, size: f32) -> Option<&CachedGlyph> {
-        let (variant, glyph) = self.fonts.glyph(ch, variant)?;
+    pub fn glyph(
+        &mut self,
+        ch: char,
+        family: Family,
+        variant: Variant,
+        size: f32,
+    ) -> Option<&CachedGlyph> {
+        let (family, variant, glyph) = self.fonts.glyph(ch, family, variant)?;
         let size_q = (size * 16.0).round() as u32;
-        let key = GlyphKey { variant, glyph, size_q };
+        let key = GlyphKey { family, variant, glyph, size_q };
         let entry = self.cache.map.entry(key).or_insert_with(|| {
-            let font = self.fonts.font(variant);
+            let font = self.fonts.font(family, variant);
             let mut scaler = self
                 .scale_ctx
                 .builder(font)
@@ -193,7 +229,7 @@ mod tests {
     #[test]
     fn embedded_fonts_load_and_are_monospace() {
         let fonts = FontSet::embedded();
-        let m = fonts.cell_metrics(17.0, 1.4);
+        let m = fonts.cell_metrics(Family::JetBrainsMono, 17.0, 1.4);
         assert!(m.cell_w > 5.0 && m.cell_w < 17.0);
         assert!(m.cell_h >= 17.0);
         assert!(m.baseline > 0.0 && m.baseline < m.cell_h);
@@ -202,25 +238,40 @@ mod tests {
     #[test]
     fn ascii_and_nerd_font_icons_have_glyphs() {
         let fonts = FontSet::embedded();
-        assert!(fonts.glyph('M', Variant::Regular).is_some());
-        assert!(fonts.glyph('M', Variant::Bold).is_some());
+        let jb = Family::JetBrainsMono;
+        assert!(fonts.glyph('M', jb, Variant::Regular).is_some());
+        assert!(fonts.glyph('M', jb, Variant::Bold).is_some());
         // Nerd Font PUA: git branch icon and folder icon.
-        assert!(fonts.glyph('\u{e0a0}', Variant::Regular).is_some(), "PUA e0a0 missing");
-        assert!(fonts.glyph('\u{f07b}', Variant::Regular).is_some(), "PUA f07b missing");
+        assert!(fonts.glyph('\u{e0a0}', jb, Variant::Regular).is_some(), "PUA e0a0 missing");
+        assert!(fonts.glyph('\u{f07b}', jb, Variant::Regular).is_some(), "PUA f07b missing");
         // Box drawing.
-        assert!(fonts.glyph('─', Variant::Regular).is_some());
-        assert!(fonts.glyph('╭', Variant::Regular).is_some());
+        assert!(fonts.glyph('─', jb, Variant::Regular).is_some());
+        assert!(fonts.glyph('╭', jb, Variant::Regular).is_some());
+    }
+
+    #[test]
+    fn geist_falls_back_to_nerd_font_for_icons() {
+        let fonts = FontSet::embedded();
+        let g = Family::GeistMono;
+        // Native Geist glyph stays in-family.
+        let (fam, _, _) = fonts.glyph('M', g, Variant::Regular).unwrap();
+        assert_eq!(fam, Family::GeistMono);
+        // PUA icon must resolve through the JetBrains Mono NF fallback.
+        let (fam, _, _) = fonts.glyph('\u{e0a0}', g, Variant::Regular).unwrap();
+        assert_eq!(fam, Family::JetBrainsMono);
+        // Italic silently maps to Regular (Geist has no italics).
+        assert!(fonts.glyph('M', g, Variant::Italic).is_some());
     }
 
     #[test]
     fn glyphs_rasterize_and_cache() {
         let mut r = Rasterizer::new();
         {
-            let g = r.glyph('A', Variant::Regular, 17.0).expect("glyph A");
+            let g = r.glyph('A', Family::JetBrainsMono, Variant::Regular, 17.0).expect("glyph A");
             assert!(g.width > 0 && g.height > 0);
             assert!(matches!(g.pixels, GlyphPixels::Mask(_)));
         }
         // Space typically produces no image.
-        assert!(r.glyph(' ', Variant::Regular, 17.0).is_none());
+        assert!(r.glyph(' ', Family::JetBrainsMono, Variant::Regular, 17.0).is_none());
     }
 }

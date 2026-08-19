@@ -1,12 +1,13 @@
 //! Grid → pixels: draws one snapshot into a tiny-skia Pixmap.
 
-use crate::font::{GlyphPixels, Rasterizer, Variant};
+use crate::font::{Family, GlyphPixels, Rasterizer, Variant};
 use crate::theme::{Rgba, Theme};
 use reel_term::{CellAttrs, CursorShape, Snapshot};
 use tiny_skia::{Pixmap, PremultipliedColorU8};
 
 pub struct GridStyle<'a> {
     pub theme: &'a Theme,
+    pub family: Family,
     pub font_size: f32,
     pub line_height: f32,
 }
@@ -15,7 +16,7 @@ pub struct GridStyle<'a> {
 /// base view and the zoom view (at a larger size), so zoomed text is
 /// re-rasterized, never upscaled.
 pub fn raster_grid(r: &mut Rasterizer, snap: &Snapshot, style: &GridStyle) -> Pixmap {
-    let m = r.fonts.cell_metrics(style.font_size, style.line_height);
+    let m = r.fonts.cell_metrics(style.family, style.font_size, style.line_height);
     let w = (snap.cols as f32 * m.cell_w).ceil() as u32;
     let h = (snap.rows as f32 * m.cell_h).ceil() as u32;
     let mut pix = Pixmap::new(w.max(1), h.max(1)).expect("grid pixmap");
@@ -66,7 +67,7 @@ pub fn raster_grid(r: &mut Rasterizer, snap: &Snapshot, style: &GridStyle) -> Pi
                 cell.attrs.contains(CellAttrs::BOLD),
                 cell.attrs.contains(CellAttrs::ITALIC),
             );
-            if let Some(g) = r.glyph(cell.ch, variant, style.font_size) {
+            if let Some(g) = r.glyph(cell.ch, style.family, variant, style.font_size) {
                 let gx = x.round() as i32 + g.left;
                 let gy = y.round() as i32 + m.baseline as i32 - g.top;
                 match &g.pixels {
@@ -284,7 +285,7 @@ mod tests {
         let s = snap(r#"[0.1, "o", "\u001b[31mhello\u001b[0m"]"#, 20, 4);
         let theme = builtin("reel-dark").unwrap();
         let mut r = Rasterizer::new();
-        let pix = raster_grid(&mut r, &s, &GridStyle { theme: &theme, font_size: 17.0, line_height: 1.4 });
+        let pix = raster_grid(&mut r, &s, &GridStyle { theme: &theme, family: Family::JetBrainsMono, font_size: 17.0, line_height: 1.4 });
         assert!(pix.width() > 100 && pix.height() > 40);
         // Some pixel in the first row band should be red-ish (fg Indexed(1)).
         let red = theme.ansi[1];
@@ -299,7 +300,7 @@ mod tests {
         let s = snap(r#"[0.1, "o", "x"]"#, 10, 2);
         let theme = builtin("reel-dark").unwrap();
         let mut r = Rasterizer::new();
-        let pix = raster_grid(&mut r, &s, &GridStyle { theme: &theme, font_size: 16.0, line_height: 1.2 });
+        let pix = raster_grid(&mut r, &s, &GridStyle { theme: &theme, family: Family::JetBrainsMono, font_size: 16.0, line_height: 1.2 });
         let cur = theme.cursor;
         let found = pix.pixels().iter().any(|p| {
             (p.red() as i32 - cur.r as i32).abs() < 12

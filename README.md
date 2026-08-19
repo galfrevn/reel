@@ -81,10 +81,11 @@ reel themes           # list built-in themes
   synchronized output (`?2026`), OSC 4 palette overrides
 - Timeline ops: `trim`, `cut`, `speed`, `hold`, `freeze`, `zoom`, `pan`,
   `caption`, `highlight`, `marker`
-- Templates: `minimal`, `glass`, `classic`, `paper` — window chrome, drop
-  shadows, gradient canvases
-- Embedded JetBrains Mono NL Nerd Font (4 variants) — TUI icon glyphs render
-  correctly everywhere, byte-identical output across machines
+- Templates: `minimal`, `glass`, `classic`, `geist`, `paper` — window chrome,
+  drop shadows, gradient canvases
+- Embedded fonts: JetBrains Mono NL Nerd Font (4 variants) and Geist Mono,
+  with a fallback chain so TUI icon glyphs render correctly in every family;
+  byte-identical output across machines
 - Change-driven GIF encoding: frames on grid change (not a clock), exact
   palette when content fits 256 colors, delta rectangles, greedy budget
   ladder with a report of what it chose

@@ -2,6 +2,7 @@
 //! Built-ins are code for now; the community-template TOML loader arrives
 //! with the registry (Phase 3).
 
+use crate::font::Family;
 use crate::theme::Rgba;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +37,7 @@ pub struct Template {
     pub name: &'static str,
     pub description: &'static str,
     pub theme: &'static str,
+    pub family: Family,
     pub font_size: f32,
     pub line_height: f32,
     pub window: WindowStyle,
@@ -60,6 +62,7 @@ pub fn builtin(name: &str) -> Option<Template> {
             name: "minimal",
             description: "High contrast, square corners, no chrome noise",
             theme: "reel-dark",
+            family: Family::JetBrainsMono,
             font_size: 16.0,
             line_height: 1.35,
             window: WindowStyle::Plain,
@@ -74,6 +77,7 @@ pub fn builtin(name: &str) -> Option<Template> {
             name: "glass",
             description: "Soft gradient, rounded chrome, generous air",
             theme: "catppuccin-mocha",
+            family: Family::JetBrainsMono,
             font_size: 17.0,
             line_height: 1.45,
             window: WindowStyle::MacOs,
@@ -88,6 +92,7 @@ pub fn builtin(name: &str) -> Option<Template> {
             name: "classic",
             description: "Bare terminal, no chrome — for purists and docs embeds",
             theme: "reel-dark",
+            family: Family::JetBrainsMono,
             font_size: 16.0,
             line_height: 1.3,
             window: WindowStyle::None,
@@ -98,10 +103,26 @@ pub fn builtin(name: &str) -> Option<Template> {
             shadow: None,
             border: None,
         },
+        "geist" => Template {
+            name: "geist",
+            description: "Pure black, Geist Mono, hairline border — deploy-preview energy",
+            theme: "geist-dark",
+            family: Family::GeistMono,
+            font_size: 15.0,
+            line_height: 1.5,
+            window: WindowStyle::Rounded,
+            corner_radius: 8.0,
+            padding: 30.0,
+            inset: 44.0,
+            canvas: CanvasBg::Solid(hex("#000000")),
+            shadow: Some(Shadow { blur: 34.0, opacity: 0.6, offset_y: 10.0 }),
+            border: Some(hex("#ffffff1f")),
+        },
         "paper" => Template {
             name: "paper",
             description: "Light background, for daytime documentation",
             theme: "paper-light",
+            family: Family::JetBrainsMono,
             font_size: 16.0,
             line_height: 1.4,
             window: WindowStyle::Rounded,
@@ -118,7 +139,7 @@ pub fn builtin(name: &str) -> Option<Template> {
 }
 
 pub fn template_names() -> &'static [&'static str] {
-    &["minimal", "glass", "classic", "paper"]
+    &["minimal", "glass", "classic", "geist", "paper"]
 }
 
 pub fn parse_window_style(s: &str) -> Option<WindowStyle> {

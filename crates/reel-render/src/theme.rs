@@ -125,6 +125,18 @@ pub fn builtin(name: &str) -> Option<Theme> {
                 hex("#7aa2f7"), hex("#bb9af7"), hex("#7dcfff"), hex("#c0caf5"),
             ],
         },
+        "geist-dark" => Theme {
+            name: "geist-dark",
+            fg: hex("#ededed"),
+            bg: hex("#0a0a0a"),
+            cursor: hex("#ededed"),
+            ansi: [
+                hex("#1a1a1a"), hex("#e5484d"), hex("#45a557"), hex("#f5a623"),
+                hex("#0070f3"), hex("#8e4ec6"), hex("#12a594"), hex("#ededed"),
+                hex("#505050"), hex("#ff6166"), hex("#63c174"), hex("#ffb224"),
+                hex("#52a8ff"), hex("#bf7af0"), hex("#0ac5b3"), hex("#ffffff"),
+            ],
+        },
         "paper-light" => Theme {
             name: "paper-light",
             fg: hex("#2d2d2d"),
@@ -143,7 +155,7 @@ pub fn builtin(name: &str) -> Option<Theme> {
 }
 
 pub fn theme_names() -> &'static [&'static str] {
-    &["reel-dark", "catppuccin-mocha", "tokyo-night", "paper-light"]
+    &["reel-dark", "catppuccin-mocha", "tokyo-night", "geist-dark", "paper-light"]
 }
 
 #[cfg(test)]
