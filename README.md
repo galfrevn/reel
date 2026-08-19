@@ -8,6 +8,7 @@ ever re-running the underlying program.
 
 **Status: early development.** The renderer and timeline editor (Phases 0–1 of
 the [spec](docs/SPEC.md)) work end to end: asciinema cast in, styled GIF out.
+Honest benchmarks against `agg` live in [docs/COMPARISON.md](docs/COMPARISON.md).
 Own capture, `reel watch`, WebM/audio, and script mode are on the roadmap.
 
 ## How it works
@@ -67,6 +68,7 @@ stay valid as you add or remove other edits. Bare durations (`for 2.5s`,
 
 ```
 reel render FILE      # .reel or .cast → .gif / .png / .txt
+reel watch FILE       # re-render on save; --serve for live browser preview
 reel shot FILE --at T # single frame PNG
 reel inspect FILE     # timeline summary
 reel init [template]  # scaffold a .reel file
