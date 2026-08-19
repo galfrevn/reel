@@ -49,6 +49,24 @@ the editor:
 4. **Lossless-exact palettes when content fits.** Terminal-theme content
    under 256 distinct colors encodes with zero quantization loss.
 
+## The budget ladder on the same recording
+
+`--budget 1mb` on the 590145 cast walks the degradation ladder and reports
+every step instead of silently failing:
+
+```
+budget: 2.63MB at fps 30 → 20 exceeds 1.00MB, degrading (scale 1 → 1)…
+budget: 2.57MB at fps → 15 exceeds 1.00MB, degrading (palette → 128)…
+budget: 2.40MB at palette → 128 exceeds 1.00MB, degrading (fps → 10, palette → 64)…
+reel_real_budget.gif: 2.30MB — 863 frames, quantized to 64 colors, fps cap 10
+warning: could not reach budget 1.00MB even at lowest quality
+```
+
+The honest takeaway cuts both ways: a 279-second raw session simply doesn't
+fit in 1MB — encoder knobs move it ~13%, not 60%. Hitting real budgets on
+long sessions requires *editing* (cut/speed the dead air), which is the
+product's whole thesis.
+
 ## Known gaps to close (tracked honestly)
 
 - Raw-render wall time: ~1.5× agg on long recordings. Rasterization is
