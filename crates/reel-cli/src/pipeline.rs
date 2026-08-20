@@ -17,6 +17,8 @@ struct Loaded {
     timeline: Timeline,
     visuals: Vec<VisualOp>,
     audio_ops: Vec<AudioOp>,
+    /// Full marker table (cast + `marker` ops), label → source time.
+    markers: Vec<(String, f64)>,
     base_dir: PathBuf,
     cast_path: PathBuf,
 }
@@ -85,7 +87,7 @@ fn load_with_source(
     // their repaints; the demo shouldn't.
     reel_term::smooth_typing(&mut snapshots, &printable_keys(&cast, &cast_path));
 
-    let program = file.resolve(cast.duration())?;
+    let program = file.resolve_with(cast.duration(), &cast_markers(&cast))?;
     let (timeline, warnings) = Timeline::compile(&program.edits, cast.duration())?;
     if !quiet {
         for w in &warnings {
@@ -106,9 +108,48 @@ fn load_with_source(
         }
     }
 
-    let visuals = program.visuals;
+    let mut visuals = program.visuals;
+    visuals.extend(key_overlay_visuals(&cast, &cast_path, &program.key_windows));
     let audio_ops = program.audio;
-    Ok(Loaded { file, cast, snapshots, timeline, visuals, audio_ops, base_dir, cast_path })
+    let markers = program.markers;
+    Ok(Loaded { file, cast, snapshots, timeline, visuals, audio_ops, markers, base_dir, cast_path })
+}
+
+/// Markers recorded in the cast ("m" events). Unlabeled ones get their
+/// 1-based ordinal as the label, so they read as `@1`, `@2`, …
+fn cast_markers(cast: &Cast) -> Vec<(String, f64)> {
+    cast.events
+        .iter()
+        .filter(|e| e.kind == EventKind::Marker)
+        .enumerate()
+        .map(|(i, e)| {
+            let label = e.data.trim();
+            let label =
+                if label.is_empty() { (i + 1).to_string() } else { label.to_string() };
+            (label, e.time)
+        })
+        .collect()
+}
+
+/// One `VisualOp::Key` per keystroke chip inside a `keys` window, from the
+/// recorded input (sidecar or cast "i" events).
+fn key_overlay_visuals(
+    cast: &Cast,
+    cast_path: &Path,
+    windows: &[(f64, f64)],
+) -> Vec<VisualOp> {
+    if windows.is_empty() {
+        return Vec::new();
+    }
+    raw_inputs(cast, cast_path)
+        .into_iter()
+        .filter(|(t, _)| windows.iter().any(|&(a, b)| *t >= a - 1e-9 && *t <= b + 1e-9))
+        .flat_map(|(t, value)| {
+            reel_term::keys::chips(&value)
+                .into_iter()
+                .map(move |label| VisualOp::Key { label, at: t })
+        })
+        .collect()
 }
 
 /// Renders each planned frame into the renderer's reused buffer and hands
@@ -459,9 +500,10 @@ fn build_audio(
     Ok(Some(samples))
 }
 
-/// Printable keypresses for typing reconstruction, in source time.
-fn printable_keys(cast: &Cast, cast_path: &Path) -> Vec<reel_term::KeyPress> {
-    let raw: Vec<(f64, String)> = match ReelMeta::load_sidecar(cast_path) {
+/// Raw input events in source time: the `.reelmeta` sidecar when `reel
+/// record` wrote one, else any "i" events an asciinema recording kept.
+fn raw_inputs(cast: &Cast, cast_path: &Path) -> Vec<(f64, String)> {
+    match ReelMeta::load_sidecar(cast_path) {
         Some(meta) if !meta.input_events.is_empty() => meta
             .input_events
             .into_iter()
@@ -474,7 +516,12 @@ fn printable_keys(cast: &Cast, cast_path: &Path) -> Vec<reel_term::KeyPress> {
             .filter(|e| e.kind == EventKind::Input)
             .map(|e| (e.time, e.data.clone()))
             .collect(),
-    };
+    }
+}
+
+/// Printable keypresses for typing reconstruction, in source time.
+fn printable_keys(cast: &Cast, cast_path: &Path) -> Vec<reel_term::KeyPress> {
+    let raw = raw_inputs(cast, cast_path);
     raw.iter()
         .flat_map(|(t, v)| {
             v.chars()
@@ -822,9 +869,17 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
 
 pub fn shot(path: &Path, at: &str, out: Option<PathBuf>, template: Option<String>) -> Result<()> {
     let loaded = load(path, template, true)?;
-    let t = TimeExpr::parse(at)
-        .map_err(|e| anyhow!("--at: {e}"))?
-        .resolve(loaded.timeline.out_duration());
+    let expr = TimeExpr::parse(at).map_err(|e| anyhow!("--at: {e}"))?;
+    // `--at` is output time, except markers, which live in source time.
+    let t = match &expr {
+        TimeExpr::Marker(_) => {
+            let src = expr
+                .resolve_in(loaded.cast.duration(), &loaded.markers)
+                .map_err(|e| anyhow!("--at: {e} (see `reel inspect` for the marker list)"))?;
+            loaded.timeline.project_snapped(src)
+        }
+        _ => expr.resolve(loaded.timeline.out_duration()),
+    };
 
     let cfg = loaded.file.config.clone();
     let (settings, _) = settings_from_config(&cfg)?;
@@ -879,29 +934,25 @@ pub fn inspect(path: &Path) -> Result<()> {
         }
     }
 
-    let markers: Vec<_> = loaded
-        .visuals
-        .iter()
-        .filter_map(|v| match v {
-            VisualOp::Marker { label, at } => Some((label, at)),
-            _ => None,
-        })
-        .collect();
-    if !markers.is_empty() {
+    if !loaded.markers.is_empty() {
         println!("\nmarkers:");
-        for (label, at) in markers {
+        for (label, at) in &loaded.markers {
             let out_t = loaded.timeline.project_snapped(*at);
-            println!("  {:>7.2}s  {} (source {:.2}s)", out_t, label, at);
+            println!("  {:>7.2}s  @{} (source {:.2}s)", out_t, label, at);
         }
     }
 
     let overlays = loaded
         .visuals
         .iter()
-        .filter(|v| !matches!(v, VisualOp::Marker { .. }))
+        .filter(|v| !matches!(v, VisualOp::Key { .. }))
         .count();
     if overlays > 0 {
         println!("\noverlays  {overlays} (zoom/pan/caption/highlight)");
+    }
+    let keys = loaded.visuals.iter().filter(|v| matches!(v, VisualOp::Key { .. })).count();
+    if keys > 0 {
+        println!("keys      {keys} keystroke chips overlaid");
     }
     Ok(())
 }
@@ -941,8 +992,10 @@ pub fn render_for_watch(
     }
     let (_, _, cast, snapshots) = cache.cast.as_ref().unwrap();
 
-    let program = file.resolve(cast.duration())?;
+    let program = file.resolve_with(cast.duration(), &cast_markers(cast))?;
     let (timeline, _) = Timeline::compile(&program.edits, cast.duration())?;
+    let mut visuals = program.visuals;
+    visuals.extend(key_overlay_visuals(cast, &cast_path, &program.key_windows));
 
     let (settings, _) = settings_from_config(&file.config)?;
     let fps = settings.fps;
@@ -955,7 +1008,7 @@ pub fn render_for_watch(
     }
     let renderer = cache.renderer.as_mut().unwrap();
 
-    let frames = plan_frames(&timeline, snapshots, &program.visuals, fps, &plan_opts);
+    let frames = plan_frames(&timeline, snapshots, &visuals, fps, &plan_opts);
     let mut rgba = Vec::with_capacity(frames.len());
     for f in &frames {
         let pix = renderer.render_frame(&snapshots[f.snapshot], f);

@@ -27,6 +27,8 @@ pub enum FormatError {
     InputOpInEditMode { line: usize, op: String },
     #[error("this file has no [source].cast and no script ops — either point it at a recording or add a script (`run \"cmd\"`, `type`, `wait_text`…) and use `reel run`")]
     NothingToDo,
+    #[error("unknown marker `@{name}` — {known}")]
+    UnknownMarker { name: String, known: String },
 }
 
 fn err(line: usize, msg: impl Into<String>) -> FormatError {
@@ -243,6 +245,9 @@ pub enum RawOp {
     Volume { level: f64, range: (TimeExpr, TimeExpr) },
     /// Mask every grid cell whose row text matches this regex.
     Redact { pattern: String },
+    /// Show the recorded keystrokes as an on-screen overlay; `None` = the
+    /// whole video.
+    Keys { range: Option<(TimeExpr, TimeExpr)> },
 }
 
 const INPUT_OPS: &[&str] = &[
@@ -283,6 +288,11 @@ pub struct EditProgram {
     pub audio: Vec<AudioOp>,
     /// Regex patterns whose matches get masked out of every frame.
     pub redactions: Vec<String>,
+    /// Source-time windows where the keystroke overlay is shown.
+    pub key_windows: Vec<(f64, f64)>,
+    /// The full marker table (cast markers + `marker` ops), label → source
+    /// time, in time order.
+    pub markers: Vec<(String, f64)>,
 }
 
 impl ReelFile {
@@ -323,55 +333,110 @@ impl ReelFile {
     }
 
     /// Resolves all time expressions against the recording duration and
-    /// buckets ops for the timeline compiler.
+    /// buckets ops for the timeline compiler. Marker references (`@name`)
+    /// resolve against `cast_markers` plus any `marker` ops in this file.
     pub fn resolve(&self, src_duration: f64) -> Result<EditProgram, FormatError> {
-        let mut p = EditProgram::default();
+        self.resolve_with(src_duration, &[])
+    }
+
+    /// Like [`resolve`](Self::resolve), with markers recorded in the cast
+    /// (label → source time) available to `@name` references.
+    pub fn resolve_with(
+        &self,
+        src_duration: f64,
+        cast_markers: &[(String, f64)],
+    ) -> Result<EditProgram, FormatError> {
         let d = src_duration;
-        let range = |r: &(TimeExpr, TimeExpr)| (r.0.resolve(d), r.1.resolve(d));
+
+        // Marker table: cast markers first, then `marker` ops in file order
+        // (which may themselves reference the markers defined so far).
+        let mut markers: Vec<(String, f64)> = cast_markers.to_vec();
+        for op in &self.ops {
+            if let RawOp::Marker { label, at } = op {
+                let t = at
+                    .resolve_in(d, &markers)
+                    .map_err(|_| unknown_marker(at, &markers))?;
+                if !markers.iter().any(|(n, _)| n == label) {
+                    markers.push((label.clone(), t));
+                }
+            }
+        }
+        markers.sort_by(|a, b| a.1.total_cmp(&b.1));
+
+        let res = |te: &TimeExpr| -> Result<f64, FormatError> {
+            te.resolve_in(d, &markers).map_err(|_| unknown_marker(te, &markers))
+        };
+        let range = |r: &(TimeExpr, TimeExpr)| -> Result<(f64, f64), FormatError> {
+            Ok((res(&r.0)?, res(&r.1)?))
+        };
+
+        let mut p = EditProgram::default();
         for op in &self.ops {
             match op {
-                RawOp::Trim { range: r } => p.edits.trim = Some(range(r)),
-                RawOp::Cut { range: r } => p.edits.cuts.push(range(r)),
+                RawOp::Trim { range: r } => p.edits.trim = Some(range(r)?),
+                RawOp::Cut { range: r } => p.edits.cuts.push(range(r)?),
                 RawOp::Speed { factor, range: r } => {
-                    let (a, b) = range(r);
+                    let (a, b) = range(r)?;
                     p.edits.speeds.push((*factor, a, b));
                 }
-                RawOp::Hold { dur, at } => p.edits.holds.push((*dur, at.resolve(d))),
+                RawOp::Hold { dur, at } => p.edits.holds.push((*dur, res(at)?)),
                 RawOp::FreezeLast { dur } => p.edits.freeze_last = Some(*dur),
                 RawOp::Zoom { factor, center, range: r } => p.visuals.push(VisualOp::Zoom {
                     factor: *factor,
                     center: *center,
-                    range: r.as_ref().map(&range),
+                    range: r.as_ref().map(&range).transpose()?,
                 }),
                 RawOp::Pan { to, range: r } => {
-                    p.visuals.push(VisualOp::Pan { to: *to, range: range(r) })
+                    p.visuals.push(VisualOp::Pan { to: *to, range: range(r)? })
                 }
                 RawOp::Caption { text, at, dur, pos } => p.visuals.push(VisualOp::Caption {
                     text: text.clone(),
-                    at: at.resolve(d),
+                    at: res(at)?,
                     dur: *dur,
                     pos: *pos,
                 }),
                 RawOp::Highlight { rect, at, dur } => p.visuals.push(VisualOp::Highlight {
                     rect: *rect,
-                    at: at.resolve(d),
+                    at: res(at)?,
                     dur: *dur,
                 }),
-                RawOp::Marker { label, at } => {
-                    p.visuals.push(VisualOp::Marker { label: label.clone(), at: at.resolve(d) })
-                }
+                RawOp::Marker { .. } => {} // already folded into the table
                 RawOp::Sound { name, at } => {
-                    p.audio.push(AudioOp::Sound { name: name.clone(), at: at.resolve(d) })
+                    p.audio.push(AudioOp::Sound { name: name.clone(), at: res(at)? })
                 }
-                RawOp::Mute { range: r } => p.audio.push(AudioOp::Mute { range: range(r) }),
+                RawOp::Mute { range: r } => p.audio.push(AudioOp::Mute { range: range(r)? }),
                 RawOp::Volume { level, range: r } => {
-                    p.audio.push(AudioOp::Volume { level: *level, range: range(r) })
+                    p.audio.push(AudioOp::Volume { level: *level, range: range(r)? })
                 }
                 RawOp::Redact { pattern } => p.redactions.push(pattern.clone()),
+                RawOp::Keys { range: r } => {
+                    p.key_windows.push(match r {
+                        Some(r) => range(r)?,
+                        None => (0.0, d),
+                    });
+                }
             }
         }
+        p.markers = markers;
         Ok(p)
     }
+}
+
+/// The error for a `@name` that isn't in the marker table.
+fn unknown_marker(te: &TimeExpr, markers: &[(String, f64)]) -> FormatError {
+    let name = match te {
+        TimeExpr::Marker(n) => n.clone(),
+        _ => String::new(), // resolve_in only fails on markers
+    };
+    let known = if markers.is_empty() {
+        "no markers exist (drop them while recording with Ctrl+], or define one \
+         with `marker \"name\" at 4s`)"
+            .to_string()
+    } else {
+        let names: Vec<String> = markers.iter().map(|(n, _)| format!("@{n}")).collect();
+        format!("known markers: {}", names.join(", "))
+    };
+    FormatError::UnknownMarker { name, known }
 }
 
 fn split_front_matter(text: &str) -> Result<(&str, &str, usize), FormatError> {
@@ -733,6 +798,14 @@ fn parse_op(name: &str, toks: &[Token], line: usize) -> Result<RawOp, FormatErro
             RawOp::Sound { name, at: a.time()? }
         }
         "redact" => RawOp::Redact { pattern: a.string()? },
+        "keys" => {
+            if a.peek_word() == Some("on") {
+                a.pos += 1;
+                RawOp::Keys { range: None }
+            } else {
+                RawOp::Keys { range: Some(a.time_range()?) }
+            }
+        }
         "mute" => RawOp::Mute { range: a.time_range()? },
         "volume" => {
             let level = a
@@ -814,6 +887,49 @@ freeze  last 1.5s
         assert_eq!(f("end"), 100.0);
         assert_eq!(f("end-2s"), 98.0);
         assert_eq!(f("7"), 7.0);
+    }
+
+    #[test]
+    fn marker_references_resolve_against_cast_and_ops() {
+        let text = "---\n[source]\ncast = \"x.cast\"\n---\n\
+                    marker \"outro\" at end-5s\n\
+                    trim @1..@outro\n\
+                    caption \"go\" at @intro for 2s\n\
+                    cut @1..@intro\n";
+        let f = ReelFile::parse(text).unwrap();
+        let cast_markers =
+            vec![("1".to_string(), 3.0), ("intro".to_string(), 10.0)];
+        let p = f.resolve_with(100.0, &cast_markers).unwrap();
+        assert_eq!(p.edits.trim, Some((3.0, 95.0)));
+        assert_eq!(p.edits.cuts, vec![(3.0, 10.0)]);
+        match &p.visuals[0] {
+            VisualOp::Caption { at, .. } => assert_eq!(*at, 10.0),
+            other => panic!("wrong op: {other:?}"),
+        }
+        // The table carries all three, sorted by time.
+        let names: Vec<&str> = p.markers.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["1", "intro", "outro"]);
+    }
+
+    #[test]
+    fn unknown_marker_is_a_clear_error() {
+        let text = "---\n[source]\ncast = \"x.cast\"\n---\ntrim @nope..end\n";
+        let f = ReelFile::parse(text).unwrap();
+        match f.resolve(10.0).unwrap_err() {
+            FormatError::UnknownMarker { name, known } => {
+                assert_eq!(name, "nope");
+                assert!(known.contains("no markers exist"), "{known}");
+            }
+            other => panic!("wrong error: {other}"),
+        }
+    }
+
+    #[test]
+    fn keys_op_parses_both_forms() {
+        let text = "---\n[source]\ncast = \"x.cast\"\n---\nkeys on\nkeys 2s..8s\n";
+        let f = ReelFile::parse(text).unwrap();
+        let p = f.resolve(20.0).unwrap();
+        assert_eq!(p.key_windows, vec![(0.0, 20.0), (2.0, 8.0)]);
     }
 
     #[test]

@@ -60,7 +60,11 @@ freeze  last 1.5s
 
 - **Timeline editing** — `trim`, `cut`, `speed`, `zoom`, `caption`,
   `highlight`, `freeze`… applied to a frozen recording, so iterating costs
-  nothing (`reel watch` re-renders on save).
+  nothing (`reel watch` re-renders on save). Press `Ctrl+]` while recording
+  to drop markers, then edit by name: `cut @1..@2`.
+- **Keystroke overlay** — `keys on` shows what you typed as screenkey-style
+  chips, straight from the recorded input; `redact "pattern"` masks secrets
+  before they ship (renders warn about emails/tokens they spot).
 - **Templates that look designed** — `glass`, `minimal`, `classic`, `geist`,
   `paper`, `crt`; bring your own as TOML or install packs from GitHub.
   Themes import from base16, Alacritty, and iTerm2.

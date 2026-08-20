@@ -80,15 +80,23 @@ Timestamps use the **recording's own clock** (source time), so edits stay
 valid as you add or remove other edits. Bare durations (`for 2.5s`,
 `freeze last 1.5s`) are output time — what the viewer experiences.
 
+While recording, `Ctrl+]` drops a **marker** at that instant; edits can
+then reference moments by name instead of hunting for timestamps
+(`trim @1..@2`, `caption "done" at @2 for 2s` — `reel inspect` lists them).
+`marker "name" at T` defines one after the fact. And `keys on` (or
+`keys A..B`) overlays the recorded keystrokes as screenkey-style chips —
+typed text groups into words, special keys get symbols (`⏎` `^C` `↑`).
+
 Available operations: `trim`, `cut`, `speed`, `hold`, `freeze`, `zoom`,
-`pan`, `caption`, `highlight`, `marker`, `sound`, `mute`, `volume`. The
+`pan`, `caption`, `highlight`, `marker`, `keys`, `redact`, `sound`, `mute`,
+`volume`. The
 complete grammar — every argument, time syntax, style overrides — lives in
 the [skill reference](../skills/reel/references/reel-file-format.md).
 
 ## Command reference
 
 ```
-reel record -o FILE -- CMD     # capture over a PTY (--size 120x40 to pin dimensions)
+reel record -o FILE -- CMD     # capture over a PTY (--size 120x40; Ctrl+] drops a marker)
 reel render FILE               # .reel or .cast → .gif / .webm / .png / .txt
 reel watch FILE                # re-render on save; --serve for browser preview
 reel shot FILE --at T          # single frame PNG

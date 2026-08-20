@@ -62,6 +62,11 @@ pacing — all of that gets fixed in the edit. Ctrl+D or `exit` ends the
 recording. A non-interactive demo (e.g. showing a build or install) you can
 record yourself.
 
+Also tell them about `Ctrl+]`: pressing it while recording drops a marker
+(never sent to the program). Markers make the edit step precise without
+timestamp hunting — `trim @1..@2`, `cut @2..@3`, `caption "…" at @1 for 2s`.
+`reel inspect` lists them.
+
 Then sanity-check the recording with a default render:
 
 ```sh
@@ -81,6 +86,8 @@ the classic problems — fixing these is where the value is:
 - **Slow start / trailing junk**: prompt setup at the head, the final `exit` → `trim`.
 - **Typos and mistakes** → `cut` the range.
 - **The money shot**: the moment worth magnifying → `zoom`, `caption`, `highlight`.
+- **Input-driven demos** (keybindings, TUI navigation): `keys on` overlays
+  the recorded keystrokes as chips so viewers see what was pressed.
 - **Looping**: GIFs loop; `freeze last 1.5s` gives the eye a resting point
   before the restart.
 

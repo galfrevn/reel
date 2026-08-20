@@ -320,7 +320,8 @@ pub enum VisualOp {
     Pan { to: (u16, u16), range: (f64, f64) },
     Caption { text: String, at: f64, dur: f64, pos: CaptionPos },
     Highlight { rect: (u16, u16, u16, u16), at: f64, dur: f64 },
-    Marker { label: String, at: f64 },
+    /// One keystroke-overlay chip (a key label from the recorded input).
+    Key { label: String, at: f64 },
 }
 
 /// Audio ops — parsed and carried through since Phase 1, mixed in Phase 1.5.
