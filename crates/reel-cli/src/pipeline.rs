@@ -37,6 +37,15 @@ pub struct WatchRender {
 }
 
 fn load(path: &Path, template_override: Option<String>, quiet: bool) -> Result<Loaded> {
+    load_with_source(path, template_override, quiet, None)
+}
+
+fn load_with_source(
+    path: &Path,
+    template_override: Option<String>,
+    quiet: bool,
+    source_override: Option<&Path>,
+) -> Result<Loaded> {
     let base_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut file = if path.extension().is_some_and(|e| e == "cast") {
         // Quick path: default styling straight from a recording.
@@ -54,8 +63,14 @@ fn load(path: &Path, template_override: Option<String>, quiet: bool) -> Result<L
         file.config.template.name = t;
     }
 
-    let cast_rel = &file.config.source.as_ref().expect("edit mode guaranteed by parser").cast;
-    let cast_path = base_dir.join(cast_rel);
+    let cast_path = match (&file.config.source, source_override) {
+        (Some(src), _) => base_dir.join(&src.cast),
+        (None, Some(cast)) => cast.to_path_buf(),
+        (None, None) => bail!(
+            "{} has no [source].cast — script-mode files run with `reel run`",
+            path.display()
+        ),
+    };
     let cast = Cast::load(&cast_path)
         .with_context(|| format!("loading cast {}", cast_path.display()))?;
 
@@ -144,6 +159,19 @@ fn render_frames(loaded: &Loaded, cfg: &ReelConfig, quiet: bool) -> Result<(Vec<
     Ok((out, warnings))
 }
 
+/// Renders a script-mode file over the cast `reel run` just captured.
+pub fn render_with_source(path: &Path, cast: &Path, quiet: bool) -> Result<()> {
+    let loaded = load_with_source(path, None, quiet, Some(cast))?;
+    let cfg = loaded.file.config.clone();
+    let out_path = cfg
+        .output
+        .file
+        .as_ref()
+        .map(|f| loaded.base_dir.join(f))
+        .unwrap_or_else(|| path.with_extension("gif"));
+    dispatch_render(&loaded, cfg, &out_path, quiet)
+}
+
 pub fn render(
     path: &Path,
     out: Option<PathBuf>,
@@ -176,6 +204,11 @@ pub fn render(
     let out_path = out
         .or_else(|| cfg.output.file.as_ref().map(|f| loaded.base_dir.join(f)))
         .unwrap_or_else(|| path.with_extension("gif"));
+    dispatch_render(&loaded, cfg, &out_path, quiet)
+}
+
+/// Routes on the output extension and writes the caption sidecar.
+fn dispatch_render(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -> Result<()> {
     let ext = out_path
         .extension()
         .and_then(|e| e.to_str())
@@ -183,13 +216,13 @@ pub fn render(
         .unwrap_or_default();
 
     let result = match ext.as_str() {
-        "gif" => render_gif(&loaded, cfg.clone(), &out_path, quiet),
+        "gif" => render_gif(loaded, cfg.clone(), out_path, quiet),
         "png" => {
-            let (frames, warns) = render_frames(&loaded, &cfg, quiet)?;
+            let (frames, warns) = render_frames(loaded, &cfg, quiet)?;
             print_warnings(&warns, quiet);
             let f = frames.first().ok_or_else(|| anyhow!("no frames"))?;
-            std::fs::write(&out_path, reel_encode::encode_png(f.width, f.height, &f.data)?)?;
-            done(&out_path, quiet)
+            std::fs::write(out_path, reel_encode::encode_png(f.width, f.height, &f.data)?)?;
+            done(out_path, quiet)
         }
         "txt" => {
             let mut text = String::new();
@@ -197,11 +230,11 @@ pub fn render(
                 text.push_str(&format!("--- t={:.3}s\n", s.src_time));
                 text.push_str(&s.to_text());
             }
-            std::fs::write(&out_path, text)?;
-            done(&out_path, quiet)
+            std::fs::write(out_path, text)?;
+            done(out_path, quiet)
         }
-        "apng" => render_apng(&loaded, cfg.clone(), &out_path, quiet),
-        "webm" => render_webm(&loaded, cfg.clone(), &out_path, quiet),
+        "apng" => render_apng(loaded, cfg.clone(), out_path, quiet),
+        "webm" => render_webm(loaded, cfg.clone(), out_path, quiet),
         "mp4" => bail!(
             "mp4 is deferred (H.264 licensing) — render a .webm, or use .gif for READMEs"
         ),
@@ -211,7 +244,7 @@ pub fn render(
     };
     if result.is_ok() && cfg.output.subtitles {
         let vtt_path = out_path.with_extension("vtt");
-        std::fs::write(&vtt_path, render_vtt(&caption_cues(&loaded)))?;
+        std::fs::write(&vtt_path, render_vtt(&caption_cues(loaded)))?;
         if !quiet {
             eprintln!("{}: WebVTT captions sidecar", vtt_path.display());
         }

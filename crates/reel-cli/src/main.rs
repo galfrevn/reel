@@ -1,5 +1,6 @@
 mod pipeline;
 mod record;
+mod script;
 mod suggest;
 mod templates;
 mod themes;
@@ -62,6 +63,17 @@ enum Command {
         /// Serve a live preview at http://127.0.0.1:PORT/
         #[arg(long, value_name = "PORT", num_args = 0..=1, default_missing_value = "4171")]
         serve: Option<u16>,
+    },
+    /// Execute a script-mode .reel (capture the program live) and render it
+    Run {
+        /// A .reel with script ops (run/type/key/wait_text/…), no [source]
+        file: PathBuf,
+        /// Only capture; skip rendering
+        #[arg(long)]
+        no_render: bool,
+        /// Suppress progress output
+        #[arg(long, short)]
+        quiet: bool,
     },
     /// Record a terminal session to a .cast (+ .reelmeta input sidecar)
     Record {
@@ -172,6 +184,23 @@ fn run() -> Result<()> {
             pipeline::render(&file, out, template, budget, scale, aspect, size, no_audio, quiet)
         }
         Command::Watch { file, out, template, serve } => watch::watch(&file, out, template, serve),
+        Command::Run { file, no_render, quiet } => {
+            let text = std::fs::read_to_string(&file)
+                .with_context(|| format!("reading {}", file.display()))?;
+            let parsed = reel_format::ReelFile::parse(&text)?;
+            if parsed.config.source.is_some() {
+                bail!(
+                    "{} is an edit-mode file ([source].cast) — use `reel render`",
+                    file.display()
+                );
+            }
+            let cast = script::capture(&file, &parsed, quiet)?;
+            if no_render {
+                println!("{}", cast.display());
+                return Ok(());
+            }
+            pipeline::render_with_source(&file, &cast, quiet)
+        }
         Command::Record { out, size, command } => record::record(&out, size, command),
         Command::Shot { file, at, out, template } => pipeline::shot(&file, &at, out, template),
         Command::Inspect { file } => pipeline::inspect(&file),

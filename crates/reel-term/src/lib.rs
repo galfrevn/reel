@@ -191,6 +191,45 @@ impl Dimensions for GridSize {
     }
 }
 
+/// Incremental emulator for live capture (`reel run`): feed output bytes as
+/// they arrive, ask for the visible text — the engine behind `wait_text`.
+pub struct LiveTerm {
+    term: Term<NullListener>,
+    parser: Processor,
+}
+
+impl LiveTerm {
+    pub fn new(cols: u16, rows: u16) -> Result<Self, TermError> {
+        if cols > 1000 || rows > 500 || cols == 0 || rows == 0 {
+            return Err(TermError::TooLarge(cols, rows));
+        }
+        let config = TermConfig { scrolling_history: 0, ..Default::default() };
+        let term = Term::new(
+            config,
+            &GridSize { cols: cols as usize, rows: rows as usize },
+            NullListener,
+        );
+        Ok(LiveTerm { term, parser: Processor::new() })
+    }
+
+    pub fn feed(&mut self, bytes: &[u8]) {
+        self.parser.advance(&mut self.term, bytes);
+    }
+
+    pub fn resize(&mut self, cols: u16, rows: u16) {
+        self.term.resize(GridSize { cols: cols as usize, rows: rows as usize });
+    }
+
+    /// The full visible text, rows joined with newlines.
+    pub fn text(&self) -> String {
+        take_snapshot(&self.term, 0.0).to_text()
+    }
+
+    pub fn contains(&self, needle: &str) -> bool {
+        self.text().contains(needle)
+    }
+}
+
 /// Replays a cast and returns one snapshot per *visible change*, in source
 /// time. The first snapshot is at t=0 (the empty grid), so the timeline can
 /// always sample a state before the first output.
@@ -390,6 +429,15 @@ mod tests {
     fn cast(body: &str) -> Cast {
         let text = format!("{}\n{}", r#"{"version": 2, "width": 20, "height": 4}"#, body);
         Cast::parse(&text).unwrap()
+    }
+
+    #[test]
+    fn live_term_sees_streamed_text() {
+        let mut lt = LiveTerm::new(40, 5).unwrap();
+        lt.feed(b"hel");
+        lt.feed(b"lo \x1b[32mworld\x1b[0m");
+        assert!(lt.contains("hello world"));
+        assert!(!lt.contains("goodbye"));
     }
 
     #[test]
