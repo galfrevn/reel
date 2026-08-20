@@ -16,8 +16,14 @@
     {
       "id": 3,
       "prompt": "I want a demo of my TUI with a caption explaining what's happening and a zoom on the results panel at the end, dark theme, looks like the Vercel docs",
-      "expected_output": "Agent asks for or records a cast, uses the geist template, adds caption and zoom ops with grid coordinates, and renders — without promising audio or video output.",
+      "expected_output": "Agent asks for or records a cast, discovers templates via `reel templates`/`reel template search`, picks a fitting dark one, adds caption and zoom ops with grid coordinates, and renders.",
       "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "are there any community templates for reel that look retro/synthwave? i want my demo gif to have that vibe. cast is at evals/fixtures/demo.cast",
+      "expected_output": "Agent searches the registry (`reel template search retro` / `synthwave`), previews candidates with `reel template try` before installing, falls back to the crt built-in or the gallery URL if nothing matches, then renders the cast with the chosen look.",
+      "files": ["evals/fixtures/demo.cast"]
     }
   ]
 }

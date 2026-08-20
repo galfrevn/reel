@@ -1,6 +1,6 @@
 ---
 name: reel
-description: Turn terminal recordings into polished, shareable demos using the reel CLI — record a session once (reel record or asciinema), then edit it like video (trim dead air, cut mistakes, speed-ramp slow parts, zoom, caption) and render a styled, size-budgeted GIF, or a WebM with procedurally synthesized sound, without ever re-running the program. Use this skill whenever the user wants a demo of their CLI or TUI, a GIF for a README, launch tweet, or docs, wants to shorten/clean up/restyle a terminal recording, mentions asciinema or .cast files, or asks to "record my terminal" or "make a demo" of a command-line tool — even if they never mention reel by name.
+description: Turn terminal recordings into polished, shareable demos using the reel CLI — record a session once (reel record or asciinema), then edit it like video (trim dead air, cut mistakes, speed-ramp slow parts, zoom, caption) and render a styled, size-budgeted GIF, or a WebM with procedurally synthesized sound, without ever re-running the program. Also covers reel's community template registry — searching, previewing, installing, and publishing terminal looks. Use this skill whenever the user wants a demo of their CLI or TUI, a GIF for a README, launch tweet, or docs, wants to shorten/clean up/restyle a terminal recording, mentions asciinema or .cast files, asks to "record my terminal" or "make a demo" of a command-line tool, or wants to find, install, or share a terminal demo template — even if they never mention reel by name.
 ---
 
 # Making terminal demos with reel
@@ -16,6 +16,12 @@ The user should not need to learn reel's file format or CLI. You drive the
 whole workflow: inspect the recording, decide the edits, write the `.reel`
 file, render, check the result, iterate. Bring the user in only for the two
 things you can't do: performing the live session, and judging taste.
+
+A second principle: **discover, don't memorize**. Templates, themes, and
+sounds are open sets — users install their own and the community registry
+grows daily. Ask the CLI what exists (`reel templates`, `reel themes`,
+`reel template search`) instead of assuming this file's examples are the
+full catalog.
 
 ## Setup
 
@@ -78,6 +84,10 @@ the classic problems — fixing these is where the value is:
 - **Looping**: GIFs loop; `freeze last 1.5s` gives the eye a resting point
   before the restart.
 
+`reel suggest session.cast --write demo.reel` drafts the edit script for you
+(trims, speed ramps over dead air) — a good starting point to tune rather
+than a finished edit.
+
 ### 3. Write the `.reel` file
 
 A `.reel` file is TOML front-matter between `---` fences, followed by one
@@ -109,7 +119,7 @@ Timestamps use the **source clock** (the recording's own time, before edits),
 so ops never need recomputing when you add or reorder others.
 
 For the complete reference — every operation, argument grammar, time syntax,
-templates, themes, style overrides — read
+style overrides, output options — read
 [references/reel-file-format.md](references/reel-file-format.md).
 
 ### 4. Render and verify
@@ -137,23 +147,64 @@ re-render. If the user wants to fiddle with the look themselves, offer
 `reel watch demo.reel --serve` — it re-renders on save with a live browser
 preview at `http://127.0.0.1:4171/`.
 
-## Choosing a template
+## Choosing a look
 
-`reel templates` lists them. Pick by destination; only ask if the user has
-expressed taste:
+Templates are an open set: six built-ins ship in the binary, users install
+more locally, and the community publishes theirs to a registry. Start by
+listing what's actually available:
 
-| Template | Use when |
-|---|---|
-| `glass` | Default — gradient canvas, rounded chrome, soft shadow |
-| `minimal` | High contrast, no decoration; technical docs |
-| `classic` | Bare terminal, no chrome; embeds where chrome would clash |
-| `geist` | Pure-black Vercel-docs look, Geist Mono |
-| `paper` | Light background; daytime documentation sites |
-| `crt` | Phosphor glow, scanlines, vignette; the eye-catching share |
+```sh
+reel templates                  # built-ins + locally installed, with descriptions
+reel template search            # everything in the community registry
+reel template search dark       # filter by name, description, tag, or repo
+```
 
-Gradient backgrounds (like `glass`) cost GIF palette efficiency. If a tight
-size budget starts visibly degrading quality, switch to a solid-canvas
-template (`minimal`, `classic`, `geist`) and tell the user why.
+Pick by destination, using the printed descriptions: a decorated dark look
+(gradient, chrome, shadow — the `glass` default) for READMEs and launches; a
+plain or chrome-less look for docs embeds where decoration would clash; a
+light look for light-mode documentation; a flashy look (scanlines, glow)
+when the user wants the shareable eye-catcher. Only ask the user if they've
+expressed taste.
+
+Each `search` hit prints its exact `reel template add owner/repo/name`
+install line. Before installing, preview any candidate against a bundled
+demo recording — it renders a preview file and prints the path:
+
+```sh
+reel template try owner/repo/name     # also takes a local .toml or installed name
+```
+
+The gallery at <https://galfrevn.github.io/reel/> shows every registry
+template as a live preview — point the user there to browse visually.
+
+For a custom look: `reel template show glass > mine.toml`, edit, then
+`reel template add mine.toml` (or pass the .toml path directly as
+`--template`). `reel template add owner/repo` installs a whole pack from any
+GitHub repo with a `templates/` directory.
+
+One physics constraint transcends template choice: gradient backgrounds cost
+GIF palette efficiency. If a tight size budget starts visibly degrading
+quality, switch to a solid-canvas template and tell the user why.
+
+### Publishing the user's look
+
+When the user has a template worth sharing (or asks how to contribute):
+
+```sh
+reel template publish mine.toml --tag dark --tag docs
+```
+
+This validates the TOML, renders the same preview the gallery will show,
+and — with `gh` installed and authenticated — forks the registry, updates
+the index, and opens the PR automatically. `--no-pr` prints the index entry
+for a manual PR instead. Publishing runs from inside the public GitHub repo
+that hosts the pack (templates live under its `templates/` directory); the
+registry only indexes, never hosts.
+
+The template's `description` and the `--tag` values are what `search` and
+the gallery match against — publish will refuse a template without a
+description. Write it for the person searching: name the mood and the
+destination ("warm light theme for daytime docs"), not the implementation.
 
 ## Audio (WebM only)
 
@@ -172,7 +223,8 @@ Keystroke sounds come from the recording's input events (or are inferred
 from the grid), UI-response pops from the grid diff, and long idle
 stretches get a low "thinking" pulse that resolves to a chime — all
 automatic. `sound "name" at T` places one-shots (success, error, chime,
-sparkle, droplet…); `mute A..B` and `volume 0.15 from A to B` shape
+sparkle, droplet…); a wrong name fails with the full list of available
+recipes, so guess freely. `mute A..B` and `volume 0.15 from A to B` shape
 regions. Speeding a region up *drops* key sounds rather than pitch-shifting
 them. GIF output ignores audio silently.
 
@@ -180,14 +232,18 @@ Rules of thumb: demos must read fine muted (GitHub/social autoplay silent);
 audio is polish, never information. Pass `--no-audio` to A/B a silent
 render.
 
-## Themes and templates beyond the built-ins
+## Themes
 
-- `reel theme import <file>` accepts base16 YAML, Alacritty TOML/YAML, and
-  iTerm2 `.itermcolors` — use the palette the user already loves, then
-  `[style] theme = "<name>"`.
-- `reel template show glass > mine.toml`, edit, `reel template add
-  mine.toml` for a custom look; `reel template add owner/repo` installs a
-  pack from GitHub.
+`reel themes` lists what's installed (built-ins plus imports). Two ways to
+bring the palette the user already loves:
+
+- `reel theme import <file>` — accepts base16 YAML, Alacritty TOML/YAML,
+  and iTerm2 `.itermcolors`.
+- `reel theme import --from iterm|kitty|ghostty` — reads the user's own
+  terminal config directly, no file hunting; it also prints their terminal
+  font as a `[style]` suggestion.
+
+Then set `[style] theme = "<name>"` — theme layers over any template.
 
 ## Script mode (no human needed)
 
@@ -196,10 +252,9 @@ write a script-mode .reel (no `[source]`) with `run "cmd"`, `type`,
 `enter`/`key`, `wait_text "…" timeout Ns`, `wait_idle Ns`, `sleep` — then
 `reel run demo.reel` captures and renders in one step. Prefer `wait_text`
 over sleeps: it reacts the moment the screen changes and never over-waits.
-Edit ops (trim/speed/caption/…) in the same file apply to the capture.
-
-`reel suggest session.cast --write demo.reel` drafts the edit script from
-any recording (trims, speed ramps over dead air) — start there, then tune.
+`[terminal]` sets the PTY size, `[env]` passes variables, `[typing]`
+controls typing pace and human jitter. Edit ops (trim/speed/caption/…) in
+the same file apply to the capture.
 
 If the render warns about possible secrets on screen (emails, tokens,
 ids), add `redact "pattern"` ops before sharing the output.
@@ -210,6 +265,6 @@ ids), add `redact "pattern"` ops before sharing the output.
   any family name). TUI icon glyphs need a Nerd Font installed — if icons
   render as boxes, tell the user to install one (e.g. JetBrainsMono Nerd
   Font) and re-render; no re-recording needed.
-- Outputs: `.gif`, `.webm`, `.png` (via `shot`), `.txt`. MP4 is deliberately
-  unsupported (licensing); offer WebM instead.
+- Outputs: `.gif`, `.webm`, `.apng`, `.png` (via `shot`), `.txt`. MP4 is
+  deliberately unsupported (licensing); offer WebM instead.
 - Windows support is best-effort and untested.

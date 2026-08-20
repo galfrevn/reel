@@ -21,22 +21,23 @@ All sections are optional except that edit mode requires `[source]`.
 cast = "session.cast"    # path to the asciinema v2 recording, relative to the .reel file
 
 [output]
-file   = "demo.gif"      # extension picks the format: .gif or .txt (.png only via `reel shot`)
+file   = "demo.gif"      # extension picks the format: .gif, .webm, .apng, .txt (.png via `reel shot`)
 loop   = true            # GIF looping (default true)
 budget = "800kb"         # optional size target, e.g. "500kb", "2mb"; encoder degrades settings to fit
 fps    = 30              # frame-rate cap; frames are emitted on grid change, not on a clock
 scale  = 2               # supersampling factor for crisp text (1-4)
 
 [template]
-name = "glass"           # minimal | glass | classic | geist | paper | crt | any installed template
+name = "glass"           # any name from `reel templates` (built-in or installed), or a .toml path
 
 [style]                  # each key overrides the template's value
-theme       = "tokyo-night"   # reel-dark | catppuccin-mocha | tokyo-night | geist-dark | paper-light | phosphor | any imported theme
+theme       = "tokyo-night"   # any name from `reel themes` (built-in or imported)
 font        = "Berkeley Mono"     # any installed font family; reel warns and falls back if missing
 font_size   = 18
 line_height = 1.4
 window      = "macos"    # macos | rounded | plain | none
 padding     = 48
+cursor_blink = false     # override the template's cursor blink
 
 [output]
 aspect = "16:9"          # optional: grow (never crop) the canvas to a ratio; window stays centered
@@ -46,6 +47,13 @@ subtitles = true         # optional: captions also become a .vtt sidecar + WebM 
 [terminal]               # script mode only: PTY geometry for `reel run`
 cols = 200
 rows = 50
+
+[env]                    # script mode only: extra variables for the child
+DEMO_MODE = "1"
+
+[typing]                 # script mode only: how `type` paces keystrokes
+delay_ms = 70            # mean delay between keys (default 70)
+jitter   = 0.35          # human variance around the mean, 0..1 (default 0.35)
 
 [audio]                  # rendered into .webm output only; ignored for .gif
 enabled   = true         # optional; defaults to on when any audio key or sound op is present
@@ -57,10 +65,8 @@ bed       = "none"       # ambient loop recipe, default off
 ```
 
 Layering order (later wins): built-in defaults → template → `[style]`
-overrides → CLI flags (`--template`, `--budget`, `--scale`, `-o`).
-
-`[terminal]`, `[env]`, and `[typing]` are accepted by the parser for forward
-compatibility with script mode but do nothing today.
+overrides → CLI flags (`--template`, `--budget`, `--scale`, `--aspect`,
+`--size`, `--no-audio`, `-o`).
 
 ## Time syntax
 
@@ -111,14 +117,16 @@ spot; add redact ops until the warnings stop.
 
 `run "cmd"` (first), `type "text"`, `key enter|esc|tab|up|ctrl+c|…`,
 `enter`, `sleep 2s`, `wait_text "needle" [timeout 30s]`,
-`wait_idle 2s [timeout 60s]`. Edit ops in the same file apply to the
-capture afterward.
+`wait_idle 2s [timeout 60s]`. Timeout defaults: 30s for `wait_text`, 60s
+for `wait_idle`; on expiry the run fails loudly with the last grid state.
+Edit ops in the same file apply to the capture afterward.
+`reel run FILE --no-render` captures only and prints the cast path.
 
 ### Audio ops (heard in .webm output; silently ignored in .gif)
 
-- `sound "name" at T` — place a one-shot. Names: chime, sparkle, droplet,
-  bloom, whisper, tick, press, release, toggle, success, error, page,
-  loading, ready, pulse, scan, arrival, soft-pulse.
+- `sound "name" at T` — place a one-shot (success, error, chime, sparkle,
+  droplet, tick, …). An unknown name fails with the complete list of
+  available recipes, so there is no need to memorize it.
 - `mute A..B` — drop every generated sound anchored in the source range.
 - `volume LEVEL from A to B` — scale generated sounds in the range (e.g.
   `volume 0.15 from 8s to 34s` under a sped-up thinking pause).
@@ -158,14 +166,28 @@ the payoff, and a resting frame before the loop.
 ## CLI quick reference
 
 ```sh
-reel render FILE [-o OUT] [--template T] [--budget 800kb] [--scale N] [-q]
-reel watch  FILE [--serve [PORT]]      # re-render on save; browser preview at 127.0.0.1:4171
-reel shot   FILE --at 12s [-o out.png] # single frame PNG
+reel record  [-o session.cast] [--size 220x54] -- CMD   # live capture + .reelmeta sidecar
+reel render  FILE [-o OUT] [--template T] [--budget 800kb] [--scale N]
+             [--aspect 16:9] [--size 1920x1080] [--no-audio] [-q]
+reel run     FILE [--no-render] [-q]   # script mode: capture + render in one step
+reel watch   FILE [--serve [PORT]]     # re-render on save; browser preview at 127.0.0.1:4171
+reel shot    FILE --at 12s [-o out.png]  # single frame PNG
 reel inspect FILE                      # duration, ops summary, markers, size estimate
+reel suggest CAST [--write demo.reel]  # draft the edit script from a recording
 reel init [TEMPLATE] [-o demo.reel]    # scaffold a .reel file
-reel templates                         # list built-in templates
-reel themes                            # list built-in themes
+
+reel templates                         # list built-in + installed templates
+reel template search [QUERY]           # search the community registry
+reel template try SOURCE               # preview (name, .toml, or owner/repo/name) without installing
+reel template add SOURCE               # install a .toml or a GitHub pack (owner/repo[/name])
+reel template show NAME                # print a template's TOML (starting point for custom looks)
+reel template publish FILE [--tag T]…  # validate + preview + open the registry PR (via gh)
+
+reel themes                            # list built-in + imported themes
+reel theme import FILE [--name N]      # base16 YAML, Alacritty, iTerm2 .itermcolors
+reel theme import --from iterm|kitty|ghostty   # straight from the user's terminal config
 ```
 
 `reel render session.cast` (a bare cast, no `.reel`) renders with default
-styling — good for a first preview.
+styling — good for a first preview. The community template gallery lives at
+<https://galfrevn.github.io/reel/>.
