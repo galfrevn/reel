@@ -3,6 +3,13 @@
 //! 256 colors (terminal themes almost always do), delta rectangles, and a
 //! quantizer fallback for gradient-heavy content.
 
+mod opus;
+pub mod webm;
+mod yuv;
+
+#[cfg(feature = "video")]
+mod vp9;
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 
@@ -16,6 +23,109 @@ pub enum EncodeError {
     NoFrames,
     #[error("frame {0} has mismatched dimensions")]
     DimensionMismatch(usize),
+    #[error("vp9 encoding failed: {0}")]
+    Vpx(String),
+    #[error("opus encoding failed: {0}")]
+    Opus(String),
+    #[error("this build of reel has no video support (compiled without the `video` feature; libvpx is required)")]
+    VideoDisabled,
+}
+
+// ---------------------------------------------------------------------------
+// WebM (VP9 + Opus)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct WebmOptions {
+    /// Constrained-quality level, 0 (best) to 63 (worst).
+    pub cq_level: u32,
+    /// Bitrate cap in kbit/s; `None` picks one from the frame area.
+    pub bitrate_kbps: Option<u32>,
+    /// libvpx speed dial, 0 (slowest/best) to 9.
+    pub cpu_used: i32,
+}
+
+impl Default for WebmOptions {
+    fn default() -> Self {
+        WebmOptions { cq_level: 24, bitrate_kbps: None, cpu_used: 2 }
+    }
+}
+
+pub struct WebmReport {
+    pub bytes: Vec<u8>,
+    pub frames: usize,
+    pub has_audio: bool,
+    pub cq_level: u32,
+    pub bitrate_kbps: u32,
+}
+
+/// Encodes frames (+ optional 48kHz mono audio) to WebM: VP9 + Opus.
+#[cfg(feature = "video")]
+pub fn encode_webm(
+    frames: &[RgbaFrame],
+    audio: Option<&[f32]>,
+    opts: &WebmOptions,
+) -> Result<WebmReport, EncodeError> {
+    let first = frames.first().ok_or(EncodeError::NoFrames)?;
+    let (w, h) = (first.width, first.height);
+    for (i, f) in frames.iter().enumerate() {
+        if f.width != w || f.height != h {
+            return Err(EncodeError::DimensionMismatch(i));
+        }
+    }
+    let bitrate = opts
+        .bitrate_kbps
+        .unwrap_or_else(|| (w * h / 500).clamp(300, 4000));
+
+    let mut enc = vp9::Vp9Encoder::new(w, h, &vp9::Vp9Config {
+        cq_level: opts.cq_level,
+        bitrate_kbps: bitrate,
+        cpu_used: opts.cpu_used,
+    })?;
+    let mut blocks = Vec::with_capacity(frames.len() + 64);
+    let mut clock_ms = 0f64;
+    for f in frames {
+        let pts = clock_ms.round() as i64;
+        clock_ms += f.duration_s * 1000.0;
+        let dur = (clock_ms.round() as i64 - pts).max(1) as u64;
+        let img = yuv::rgba_to_i420(w, h, &f.data);
+        blocks.extend(enc.encode(&img, pts, dur)?);
+    }
+    blocks.extend(enc.finish()?);
+    let frame_count = blocks.len();
+
+    let has_audio = match audio {
+        Some(samples) if !samples.is_empty() => {
+            blocks.extend(opus::encode_opus(samples)?);
+            true
+        }
+        _ => false,
+    };
+
+    let video_track = webm::VideoTrack { width: w, height: h };
+    let audio_track = webm::AudioTrack {
+        channels: 1,
+        sample_rate: opus::OPUS_SAMPLE_RATE,
+        pre_skip: 0,
+    };
+    let bytes = webm::mux(
+        &video_track,
+        has_audio.then_some(&audio_track),
+        blocks,
+        clock_ms,
+    );
+    Ok(WebmReport { bytes, frames: frame_count, has_audio, cq_level: opts.cq_level, bitrate_kbps: bitrate })
+}
+
+/// Stub so callers get a clear runtime error instead of a compile break when
+/// the `video` feature is off.
+#[cfg(not(feature = "video"))]
+pub fn encode_webm(
+    _frames: &[RgbaFrame],
+    _audio: Option<&[f32]>,
+    _opts: &WebmOptions,
+) -> Result<WebmReport, EncodeError> {
+    Err(EncodeError::VideoDisabled)
 }
 
 /// One output frame: straight (non-premultiplied) RGBA and a display duration.

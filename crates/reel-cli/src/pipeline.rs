@@ -2,12 +2,12 @@
 //! encoder, plus the greedy budget ladder.
 
 use anyhow::{anyhow, bail, Context, Result};
-use reel_cast::Cast;
-use reel_encode::{GifOptions, PaletteMode, RgbaFrame};
+use reel_cast::{Cast, EventKind, ReelMeta};
+use reel_encode::{GifOptions, PaletteMode, RgbaFrame, WebmOptions};
 use reel_format::{parse_budget, ReelConfig, ReelFile, TimeExpr};
 use reel_render::{pixmap_to_rgba, plan, settings_from_config, Renderer};
 use reel_term::Snapshot;
-use reel_timeline::{Timeline, VisualOp};
+use reel_timeline::{AudioOp, Timeline, VisualOp};
 use std::path::{Path, PathBuf};
 
 struct Loaded {
@@ -16,7 +16,9 @@ struct Loaded {
     snapshots: Vec<Snapshot>,
     timeline: Timeline,
     visuals: Vec<VisualOp>,
+    audio_ops: Vec<AudioOp>,
     base_dir: PathBuf,
+    cast_path: PathBuf,
 }
 
 /// State kept between `reel watch` renders: replayed snapshots keyed by cast
@@ -71,14 +73,10 @@ fn load(path: &Path, template_override: Option<String>, quiet: bool) -> Result<L
         for w in &warnings {
             eprintln!("warning: {w}");
         }
-        if !program.audio.is_empty() {
-            eprintln!(
-                "warning: audio ops parsed but ignored — sound arrives with the WebM encoder"
-            );
-        }
     }
     let visuals = program.visuals;
-    Ok(Loaded { file, cast, snapshots, timeline, visuals, base_dir })
+    let audio_ops = program.audio;
+    Ok(Loaded { file, cast, snapshots, timeline, visuals, audio_ops, base_dir, cast_path })
 }
 
 fn uniform_dims(snaps: &[Snapshot]) -> bool {
@@ -117,6 +115,7 @@ pub fn render(
     template: Option<String>,
     budget: Option<String>,
     scale: Option<u32>,
+    no_audio: bool,
     quiet: bool,
 ) -> Result<()> {
     let loaded = load(path, template, quiet)?;
@@ -126,6 +125,9 @@ pub fn render(
     }
     if let Some(b) = budget {
         cfg.output.budget = Some(b);
+    }
+    if no_audio {
+        cfg.audio.enabled = Some(false);
     }
 
     let out_path = out
@@ -155,11 +157,220 @@ pub fn render(
             std::fs::write(&out_path, text)?;
             done(&out_path, quiet)
         }
-        "webm" | "mp4" => bail!(
-            "video output isn't wired up yet (VP9/Opus lands in Phase 1.5) — render a .gif for now"
+        "webm" => render_webm(&loaded, cfg, &out_path, quiet),
+        "mp4" => bail!(
+            "mp4 is deferred (H.264 licensing) — render a .webm, or use .gif for READMEs"
         ),
-        other => bail!("unsupported output extension `.{other}` (use .gif, .png, or .txt)"),
+        other => bail!("unsupported output extension `.{other}` (use .gif, .webm, .png, or .txt)"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Audio
+// ---------------------------------------------------------------------------
+
+/// Builds the mixed 48kHz mono buffer for this render, or `None` when audio
+/// is inactive. Only the WebM path calls this.
+fn build_audio(
+    cast: &Cast,
+    cast_path: &Path,
+    snapshots: &[Snapshot],
+    timeline: &Timeline,
+    audio_ops: &[AudioOp],
+    cfg: &ReelConfig,
+    quiet: bool,
+) -> Result<Option<Vec<f32>>> {
+    if !cfg.audio.active(!audio_ops.is_empty()) {
+        return Ok(None);
+    }
+    let audio = &cfg.audio;
+
+    let keyboard = match audio.keyboard.as_deref() {
+        Some("none") => None,
+        Some(name) => Some(reel_audio::keyboard_profile(name).ok_or_else(|| {
+            anyhow!(
+                "unknown keyboard profile `{name}` (available: {}, none)",
+                reel_audio::keyboard_profile_names().join(", ")
+            )
+        })?),
+        // Batteries included: audio on implies a keyboard unless opted out.
+        None => reel_audio::keyboard_profile("mx-brown"),
+    };
+    let thinking = match audio.thinking.as_deref() {
+        Some("none") => None,
+        Some(name) => Some(name.to_string()),
+        None => Some("soft-pulse".to_string()),
+    };
+    let bed = match audio.bed.as_deref() {
+        Some("none") | None => None,
+        Some(name) => Some(name.to_string()),
+    };
+
+    let plan_cfg = reel_audio::PlanConfig {
+        keyboard,
+        ui_sounds: audio.ui_sounds,
+        thinking,
+        bed,
+    };
+    let keys = key_inputs(cast, cast_path);
+    let changes = grid_changes(snapshots);
+    let plan = reel_audio::plan_events(timeline, audio_ops, &keys, &changes, &plan_cfg)
+        .map_err(|e| anyhow!("{e}"))?;
+    if !quiet {
+        for w in &plan.warnings {
+            eprintln!("warning: {w}");
+        }
+        eprintln!("audio: {} events, keyboard {}", plan.events.len(),
+            plan_cfg.keyboard.map(|p| p.name).unwrap_or("none"));
+    }
+    let samples = reel_audio::mix(&plan.events, timeline.out_duration(), audio.volume);
+    Ok(Some(samples))
+}
+
+/// Keystrokes for the audio planner: the `.reelmeta` sidecar when `reel
+/// record` wrote one, else any "i" events an asciinema recording kept.
+fn key_inputs(cast: &Cast, cast_path: &Path) -> Vec<reel_audio::KeyInput> {
+    if let Some(meta) = ReelMeta::load_sidecar(cast_path) {
+        if !meta.input_events.is_empty() {
+            return meta
+                .input_events
+                .iter()
+                .filter(|e| e.kind == "key")
+                .map(|e| reel_audio::KeyInput {
+                    src_time: e.t,
+                    kind: reel_audio::KeyKind::from_data(&e.value),
+                })
+                .collect();
+        }
+    }
+    cast.events
+        .iter()
+        .filter(|e| e.kind == EventKind::Input)
+        .map(|e| reel_audio::KeyInput {
+            src_time: e.time,
+            kind: reel_audio::KeyKind::from_data(&e.data),
+        })
+        .collect()
+}
+
+/// Per-snapshot change summaries for typing inference and UI cues.
+fn grid_changes(snaps: &[Snapshot]) -> Vec<reel_audio::GridChange> {
+    snaps
+        .windows(2)
+        .map(|w| {
+            let (a, b) = (&w[0], &w[1]);
+            let cols = b.cols as usize;
+            let mut changed = 0u32;
+            let mut rows_touched = 0u16;
+            for row in 0..b.rows as usize {
+                let ra = &a.cells[row * cols..(row + 1) * cols];
+                let rb = &b.cells[row * cols..(row + 1) * cols];
+                let row_changed: u32 = ra.iter().zip(rb).filter(|(x, y)| x != y).count() as u32;
+                if row_changed > 0 {
+                    rows_touched += 1;
+                    changed += row_changed;
+                }
+            }
+            reel_audio::GridChange {
+                src_time: b.src_time,
+                changed_cells: changed,
+                total_cells: (b.cols as u32) * (b.rows as u32),
+                rows_touched,
+                cursor_advanced: b.cursor.row == a.cursor.row && b.cursor.col > a.cursor.col,
+            }
+        })
+        .collect()
+}
+
+/// WebM budget ladder: walk the CQ level (and then fps/scale) down until the
+/// file fits, reporting each step like the GIF path does.
+fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -> Result<()> {
+    let budget_bytes = match &cfg.output.budget {
+        Some(b) => Some(
+            parse_budget(b).ok_or_else(|| anyhow!("invalid budget `{b}` (try 800kb or 2mb)"))?,
+        ),
+        None => None,
+    };
+    let audio = build_audio(
+        &loaded.cast,
+        &loaded.cast_path,
+        &loaded.snapshots,
+        &loaded.timeline,
+        &loaded.audio_ops,
+        &cfg,
+        quiet,
+    )?;
+
+    // (label, cq_level, fps, scale)
+    let base_fps = cfg.output.fps;
+    let base_scale = cfg.output.scale;
+    let ladder: Vec<(String, u32, u32, u32)> = vec![
+        ("as configured".into(), 24, base_fps, base_scale),
+        ("cq → 34".into(), 34, base_fps, base_scale),
+        (format!("scale {base_scale} → 1"), 34, base_fps, 1),
+        ("cq → 45, fps → 20".into(), 45, base_fps.min(20), 1),
+        ("cq → 55, fps → 15".into(), 55, 15, 1),
+    ];
+
+    let mut frames: Option<(u32, u32, Vec<RgbaFrame>)> = None;
+    for (i, (label, cq, fps, scale)) in ladder.iter().enumerate() {
+        if budget_bytes.is_none() && i > 0 {
+            break;
+        }
+        let mut step_cfg = cfg.clone();
+        step_cfg.output.fps = *fps;
+        step_cfg.output.scale = *scale;
+        if frames.as_ref().map(|(f, s, _)| (*f, *s)) != Some((*fps, *scale)) {
+            let (rendered, warns) = render_frames(loaded, &step_cfg, quiet || i > 0)?;
+            if i == 0 {
+                print_warnings(&warns, quiet);
+            }
+            frames = Some((*fps, *scale, rendered));
+        }
+        let (_, _, ref rendered) = frames.as_ref().unwrap();
+
+        let report = reel_encode::encode_webm(
+            rendered,
+            audio.as_deref(),
+            &WebmOptions { cq_level: *cq, ..Default::default() },
+        )?;
+        let size = report.bytes.len() as u64;
+        let fits = budget_bytes.map(|b| size <= b).unwrap_or(true);
+        if fits || i == ladder.len() - 1 {
+            std::fs::write(out_path, &report.bytes)?;
+            if !quiet {
+                eprintln!(
+                    "{}: {} — {} frames, vp9 cq {} (cap {} kbps), {}{}",
+                    out_path.display(),
+                    human_size(size),
+                    report.frames,
+                    report.cq_level,
+                    report.bitrate_kbps,
+                    if report.has_audio { "opus audio" } else { "no audio" },
+                    if i > 0 { format!(" (budget ladder: {label})") } else { String::new() }
+                );
+                if let Some(b) = budget_bytes {
+                    if size > b {
+                        eprintln!(
+                            "warning: could not reach budget {} even at lowest quality",
+                            human_size(b)
+                        );
+                    }
+                }
+            }
+            return Ok(());
+        }
+        if !quiet {
+            eprintln!(
+                "budget: {} at {} exceeds {}, degrading ({})…",
+                human_size(size),
+                label,
+                human_size(budget_bytes.unwrap()),
+                ladder[i + 1].0
+            );
+        }
+    }
+    unreachable!("ladder always writes on its last rung");
 }
 
 /// Greedy degradation ladder: try the configured quality first, then walk
@@ -420,6 +631,18 @@ pub fn render_for_watch(
         "png" => {
             let f = rgba.first().ok_or_else(|| anyhow!("no frames"))?;
             reel_encode::encode_png(f.width, f.height, &f.data)?
+        }
+        "webm" => {
+            let audio = build_audio(
+                cast,
+                &cast_path,
+                snapshots,
+                &timeline,
+                &program.audio,
+                &file.config,
+                true,
+            )?;
+            reel_encode::encode_webm(&rgba, audio.as_deref(), &WebmOptions::default())?.bytes
         }
         _ => {
             reel_encode::encode_gif(

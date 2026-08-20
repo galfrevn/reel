@@ -23,7 +23,7 @@ enum Command {
     Render {
         /// Path to a .reel file, or a .cast for a quick default render
         file: PathBuf,
-        /// Output file; extension picks the format (.gif, .png, .txt)
+        /// Output file; extension picks the format (.gif, .webm, .png, .txt)
         #[arg(long, short)]
         out: Option<PathBuf>,
         /// Template override (minimal, glass, classic, paper)
@@ -35,6 +35,9 @@ enum Command {
         /// Supersampling scale override (1-4)
         #[arg(long)]
         scale: Option<u32>,
+        /// Render silent even if the .reel configures audio (webm only)
+        #[arg(long)]
+        no_audio: bool,
         /// Suppress progress output
         #[arg(long, short)]
         quiet: bool,
@@ -86,8 +89,8 @@ fn main() {
 
 fn run() -> Result<()> {
     match Cli::parse().command {
-        Command::Render { file, out, template, budget, scale, quiet } => {
-            pipeline::render(&file, out, template, budget, scale, quiet)
+        Command::Render { file, out, template, budget, scale, no_audio, quiet } => {
+            pipeline::render(&file, out, template, budget, scale, no_audio, quiet)
         }
         Command::Watch { file, out, template, serve } => watch::watch(&file, out, template, serve),
         Command::Shot { file, at, out, template } => pipeline::shot(&file, &at, out, template),

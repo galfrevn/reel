@@ -113,7 +113,9 @@ pub struct StyleCfg {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AudioCfg {
-    pub enabled: bool,
+    /// `None` = auto: audio is active when anything audible is configured
+    /// (a keyboard/thinking/bed setting or a `sound` op in the script).
+    pub enabled: Option<bool>,
     pub keyboard: Option<String>,
     pub volume: f32,
     pub ui_sounds: bool,
@@ -123,7 +125,22 @@ pub struct AudioCfg {
 
 impl Default for AudioCfg {
     fn default() -> Self {
-        AudioCfg { enabled: false, keyboard: None, volume: 0.35, ui_sounds: true, thinking: None, bed: None }
+        AudioCfg { enabled: None, keyboard: None, volume: 0.35, ui_sounds: true, thinking: None, bed: None }
+    }
+}
+
+impl AudioCfg {
+    /// Whether audio should be produced at all (only WebM output carries it).
+    pub fn active(&self, has_sound_ops: bool) -> bool {
+        match self.enabled {
+            Some(v) => v,
+            None => {
+                has_sound_ops
+                    || self.keyboard.is_some()
+                    || self.thinking.is_some()
+                    || self.bed.is_some()
+            }
+        }
     }
 }
 

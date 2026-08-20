@@ -17,6 +17,7 @@ reel-timeline = { workspace = true }
 reel-format = { workspace = true }
 reel-render = { workspace = true }
 reel-encode = { workspace = true }
+reel-audio = { workspace = true }
 anyhow = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 notify = "8"

@@ -69,6 +69,8 @@ pub struct PlanConfig {
     pub ui_sounds: bool,
     /// Recipe for the thinking-bed pulse (e.g. "soft-pulse"); `None` disables.
     pub thinking: Option<String>,
+    /// Ambient bed recipe looped softly under the whole demo; default off.
+    pub bed: Option<String>,
 }
 
 #[derive(Debug)]
@@ -234,7 +236,24 @@ pub fn plan_events(
         }
     }
 
-    // --- 4. Explicit `sound` ops ---------------------------------------------
+    // --- 4. Ambient bed -------------------------------------------------------
+    if let Some(bed) = &cfg.bed {
+        if recipes::recipe(bed).is_none() {
+            return Err(AudioError::UnknownSound(
+                bed.clone(),
+                recipes::recipe_names().join(", "),
+            ));
+        }
+        let mut t = 0.0;
+        while t < timeline.out_duration() {
+            if !muted(timeline.sample(t)) {
+                push(&mut events, t, bed, 1.0, 0.25 * volume_at(timeline.sample(t)))?;
+            }
+            t += 2.0;
+        }
+    }
+
+    // --- 5. Explicit `sound` ops ---------------------------------------------
     for op in ops {
         if let AudioOp::Sound { name, at } = op {
             if recipes::recipe(name).is_none() {
@@ -298,6 +317,7 @@ mod tests {
             keyboard: recipes::keyboard_profile("mx-brown"),
             ui_sounds: false,
             thinking: None,
+            bed: None,
         }
     }
 
@@ -354,7 +374,7 @@ mod tests {
             // Idle then big change: cue.
             GridChange { src_time: 5.0, changed_cells: 300, total_cells: 1000, rows_touched: 10, cursor_advanced: false },
         ];
-        let cfg = PlanConfig { keyboard: None, ui_sounds: true, thinking: None };
+        let cfg = PlanConfig { keyboard: None, ui_sounds: true, thinking: None, bed: None };
         let plan = plan_events(&tl, &[], &[], &changes, &cfg).unwrap();
         assert_eq!(plan.events.len(), 1);
         assert_eq!(plan.events[0].name, "pulse");
@@ -368,7 +388,7 @@ mod tests {
             GridChange { src_time: 1.0, changed_cells: 10, total_cells: 1000, rows_touched: 1, cursor_advanced: false },
             GridChange { src_time: 11.0, changed_cells: 10, total_cells: 1000, rows_touched: 1, cursor_advanced: false },
         ];
-        let cfg = PlanConfig { keyboard: None, ui_sounds: false, thinking: Some("soft-pulse".into()) };
+        let cfg = PlanConfig { keyboard: None, ui_sounds: false, thinking: Some("soft-pulse".into()), bed: None };
         let plan = plan_events(&tl, &[], &[], &changes, &cfg).unwrap();
         let pulses = plan.events.iter().filter(|e| e.name == "soft-pulse").count();
         assert!(pulses >= 5, "10s gap should pulse repeatedly, got {pulses}");
@@ -384,7 +404,7 @@ mod tests {
             GridChange { src_time: 1.0, changed_cells: 10, total_cells: 1000, rows_touched: 1, cursor_advanced: false },
             GridChange { src_time: 11.0, changed_cells: 10, total_cells: 1000, rows_touched: 1, cursor_advanced: false },
         ];
-        let cfg = PlanConfig { keyboard: None, ui_sounds: false, thinking: Some("soft-pulse".into()) };
+        let cfg = PlanConfig { keyboard: None, ui_sounds: false, thinking: Some("soft-pulse".into()), bed: None };
         let plan = plan_events(&tl, &[], &[], &changes, &cfg).unwrap();
         let pulses = plan.events.iter().filter(|e| e.name == "soft-pulse").count();
         assert!((1..=2).contains(&pulses), "2s output gap → 1-2 pulses, got {pulses}");

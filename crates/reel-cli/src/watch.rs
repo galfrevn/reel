@@ -123,6 +123,7 @@ fn render_once(
             let mut p = preview.lock().unwrap();
             p.content_type = match result.extension.as_str() {
                 "png" => "image/png",
+                "webm" => "video/webm",
                 _ => "image/gif",
             };
             p.bytes = result.bytes;
@@ -235,20 +236,29 @@ const PAGE: &str = r#"<!doctype html>
 <style>
   body { margin: 0; min-height: 100vh; display: grid; place-items: center;
          background: #101014; font: 13px/1.5 ui-monospace, monospace; color: #e6e6eb; }
-  img { max-width: 96vw; max-height: 90vh; }
+  img, video { max-width: 96vw; max-height: 90vh; }
   #err { position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 16px;
          background: #b3261e; color: #fff; display: none; white-space: pre-wrap; }
 </style>
-<img id="demo" src="/out" alt="reel output">
+<div id="stage"></div>
 <div id="err"></div>
 <script>
-  const es = new EventSource('/events');
-  const img = document.getElementById('demo');
+  const stage = document.getElementById('stage');
   const err = document.getElementById('err');
-  es.addEventListener('reload', () => {
-    err.style.display = 'none';
-    img.src = '/out?' + Date.now();
-  });
+  let lastUrl = null;
+  async function refresh() {
+    const r = await fetch('/out?' + Date.now());
+    const type = r.headers.get('content-type') || '';
+    const url = URL.createObjectURL(await r.blob());
+    stage.innerHTML = type.startsWith('video')
+      ? `<video src="${url}" autoplay loop muted controls></video>`
+      : `<img src="${url}" alt="reel output">`;
+    if (lastUrl) URL.revokeObjectURL(lastUrl);
+    lastUrl = url;
+  }
+  refresh();
+  const es = new EventSource('/events');
+  es.addEventListener('reload', () => { err.style.display = 'none'; refresh(); });
   es.addEventListener('error', (e) => {
     if (e.data) { err.textContent = e.data; err.style.display = 'block'; }
   });
