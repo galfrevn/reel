@@ -1,6 +1,7 @@
 mod net;
 mod pipeline;
 mod publish;
+mod queries;
 mod record;
 mod registry;
 mod script;
