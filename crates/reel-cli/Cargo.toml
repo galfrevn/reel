@@ -35,3 +35,4 @@ serde.workspace = true
 toml.workspace = true
 ureq = "3"
 serde_json.workspace = true
+regex-lite = "0.1.9"

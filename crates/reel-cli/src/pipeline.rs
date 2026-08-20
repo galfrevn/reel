@@ -5,7 +5,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use reel_cast::{Cast, EventKind, ReelMeta};
 use reel_encode::{GifOptions, PaletteMode, RgbaFrame, WebmOptions};
 use reel_format::{parse_budget, ReelConfig, ReelFile, TimeExpr};
-use reel_render::{pixmap_to_rgba, plan, settings_from_config, Renderer};
+use reel_render::{pixmap_to_rgba, plan_with, settings_from_config, Renderer};
 use reel_term::Snapshot;
 use reel_timeline::{AudioOp, Timeline, VisualOp};
 use std::path::{Path, PathBuf};
@@ -37,6 +37,15 @@ pub struct WatchRender {
 }
 
 fn load(path: &Path, template_override: Option<String>, quiet: bool) -> Result<Loaded> {
+    load_with_source(path, template_override, quiet, None)
+}
+
+fn load_with_source(
+    path: &Path,
+    template_override: Option<String>,
+    quiet: bool,
+    source_override: Option<&Path>,
+) -> Result<Loaded> {
     let base_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut file = if path.extension().is_some_and(|e| e == "cast") {
         // Quick path: default styling straight from a recording.
@@ -54,18 +63,27 @@ fn load(path: &Path, template_override: Option<String>, quiet: bool) -> Result<L
         file.config.template.name = t;
     }
 
-    let cast_rel = &file.config.source.as_ref().expect("edit mode guaranteed by parser").cast;
-    let cast_path = base_dir.join(cast_rel);
+    let cast_path = match (&file.config.source, source_override) {
+        (Some(src), _) => base_dir.join(&src.cast),
+        (None, Some(cast)) => cast.to_path_buf(),
+        (None, None) => bail!(
+            "{} has no [source].cast — script-mode files run with `reel run`",
+            path.display()
+        ),
+    };
     let cast = Cast::load(&cast_path)
         .with_context(|| format!("loading cast {}", cast_path.display()))?;
 
-    let snapshots = reel_term::replay(&cast)?;
+    let mut snapshots = reel_term::replay(&cast)?;
     if !uniform_dims(&snapshots) {
         bail!(
             "this cast resizes mid-session, which reel can't render yet — \
              re-record at a fixed size"
         );
     }
+    // Rebuild letter-by-letter typing from the recorded keys: TUIs batch
+    // their repaints; the demo shouldn't.
+    reel_term::smooth_typing(&mut snapshots, &printable_keys(&cast, &cast_path));
 
     let program = file.resolve(cast.duration())?;
     let (timeline, warnings) = Timeline::compile(&program.edits, cast.duration())?;
@@ -74,9 +92,38 @@ fn load(path: &Path, template_override: Option<String>, quiet: bool) -> Result<L
             eprintln!("warning: {w}");
         }
     }
+    // Redactions run before anything renders, and cover .txt dumps too.
+    for pattern in &program.redactions {
+        let re = regex_lite::Regex::new(pattern)
+            .map_err(|e| anyhow!("redact `{pattern}`: {e}"))?;
+        reel_term::redact::apply(&mut snapshots, &re);
+    }
+    if !quiet {
+        for (kind, sample) in reel_term::redact::scan_sensitive(&snapshots, 4) {
+            eprintln!(
+                "warning: possible {kind} on screen: \"{sample}\" — mask it with: redact \"…\""
+            );
+        }
+    }
+
     let visuals = program.visuals;
     let audio_ops = program.audio;
     Ok(Loaded { file, cast, snapshots, timeline, visuals, audio_ops, base_dir, cast_path })
+}
+
+/// Renders each planned frame into the renderer's reused buffer and hands
+/// the encoder a borrowed slice — flat memory, zero per-frame allocations.
+fn render_each(
+    renderer: &mut Renderer,
+    plans: &[reel_render::FramePlan],
+    snapshots: &[Snapshot],
+    mut sink: impl FnMut(&[u8], u32, u32, f64) -> Result<()>,
+) -> Result<()> {
+    for f in plans {
+        let (w, h, rgba) = renderer.render_frame_rgba(&snapshots[f.snapshot], f);
+        sink(rgba, w, h, f.dur)?;
+    }
+    Ok(())
 }
 
 fn uniform_dims(snaps: &[Snapshot]) -> bool {
@@ -86,9 +133,11 @@ fn uniform_dims(snaps: &[Snapshot]) -> bool {
 fn render_frames(loaded: &Loaded, cfg: &ReelConfig, quiet: bool) -> Result<(Vec<RgbaFrame>, Vec<String>)> {
     let (settings, mut warnings) = settings_from_config(cfg)?;
     let fps = settings.fps;
+    let settings_cursor_blink = settings.cursor_blink;
     let (mut renderer, font_warnings) = Renderer::new(settings)?;
+    renderer.fit_exact(loaded.cast.cols(), loaded.cast.rows());
     warnings.extend(font_warnings);
-    let frames = plan(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps);
+    let frames = plan_with(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps, settings_cursor_blink);
     if !quiet {
         eprintln!(
             "rendering {} frames ({:.1}s output from {:.1}s recording)…",
@@ -110,6 +159,19 @@ fn render_frames(loaded: &Loaded, cfg: &ReelConfig, quiet: bool) -> Result<(Vec<
     Ok((out, warnings))
 }
 
+/// Renders a script-mode file over the cast `reel run` just captured.
+pub fn render_with_source(path: &Path, cast: &Path, quiet: bool) -> Result<()> {
+    let loaded = load_with_source(path, None, quiet, Some(cast))?;
+    let cfg = loaded.file.config.clone();
+    let out_path = cfg
+        .output
+        .file
+        .as_ref()
+        .map(|f| loaded.base_dir.join(f))
+        .unwrap_or_else(|| path.with_extension("gif"));
+    dispatch_render(&loaded, cfg, &out_path, quiet)
+}
+
 pub fn render(
     path: &Path,
     out: Option<PathBuf>,
@@ -117,6 +179,7 @@ pub fn render(
     budget: Option<String>,
     scale: Option<u32>,
     aspect: Option<String>,
+    size: Option<String>,
     no_audio: bool,
     quiet: bool,
 ) -> Result<()> {
@@ -128,6 +191,9 @@ pub fn render(
     if aspect.is_some() {
         cfg.output.aspect = aspect;
     }
+    if size.is_some() {
+        cfg.output.size = size;
+    }
     if let Some(b) = budget {
         cfg.output.budget = Some(b);
     }
@@ -138,20 +204,25 @@ pub fn render(
     let out_path = out
         .or_else(|| cfg.output.file.as_ref().map(|f| loaded.base_dir.join(f)))
         .unwrap_or_else(|| path.with_extension("gif"));
+    dispatch_render(&loaded, cfg, &out_path, quiet)
+}
+
+/// Routes on the output extension and writes the caption sidecar.
+fn dispatch_render(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -> Result<()> {
     let ext = out_path
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase)
         .unwrap_or_default();
 
-    match ext.as_str() {
-        "gif" => render_gif(&loaded, cfg, &out_path, quiet),
+    let result = match ext.as_str() {
+        "gif" => render_gif(loaded, cfg.clone(), out_path, quiet),
         "png" => {
-            let (frames, warns) = render_frames(&loaded, &cfg, quiet)?;
+            let (frames, warns) = render_frames(loaded, &cfg, quiet)?;
             print_warnings(&warns, quiet);
             let f = frames.first().ok_or_else(|| anyhow!("no frames"))?;
-            std::fs::write(&out_path, reel_encode::encode_png(f.width, f.height, &f.data)?)?;
-            done(&out_path, quiet)
+            std::fs::write(out_path, reel_encode::encode_png(f.width, f.height, &f.data)?)?;
+            done(out_path, quiet)
         }
         "txt" => {
             let mut text = String::new();
@@ -159,15 +230,104 @@ pub fn render(
                 text.push_str(&format!("--- t={:.3}s\n", s.src_time));
                 text.push_str(&s.to_text());
             }
-            std::fs::write(&out_path, text)?;
-            done(&out_path, quiet)
+            std::fs::write(out_path, text)?;
+            done(out_path, quiet)
         }
-        "webm" => render_webm(&loaded, cfg, &out_path, quiet),
+        "apng" => render_apng(loaded, cfg.clone(), out_path, quiet),
+        "webm" => render_webm(loaded, cfg.clone(), out_path, quiet),
         "mp4" => bail!(
             "mp4 is deferred (H.264 licensing) — render a .webm, or use .gif for READMEs"
         ),
-        other => bail!("unsupported output extension `.{other}` (use .gif, .webm, .png, or .txt)"),
+        other => bail!(
+            "unsupported output extension `.{other}` (use .gif, .webm, .apng, .png, or .txt)"
+        ),
+    };
+    if result.is_ok() && cfg.output.subtitles {
+        let vtt_path = out_path.with_extension("vtt");
+        std::fs::write(&vtt_path, render_vtt(&caption_cues(loaded)))?;
+        if !quiet {
+            eprintln!("{}: WebVTT captions sidecar", vtt_path.display());
+        }
     }
+    result
+}
+
+/// Animated PNG: lossless truecolor, streamed in one pass (no palette to
+/// negotiate and no budget ladder — sizes are what the content costs).
+fn render_apng(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -> Result<()> {
+    if cfg.output.budget.is_some() && !quiet {
+        eprintln!("note: budget is ignored for .apng (lossless format)");
+    }
+    let (settings, warns) = settings_from_config(&cfg)?;
+    let fps = settings.fps;
+    let blink = settings.cursor_blink;
+    let (mut renderer, font_warns) = Renderer::new(settings)?;
+    renderer.fit_exact(loaded.cast.cols(), loaded.cast.rows());
+    print_warnings(&warns, quiet);
+    print_warnings(&font_warns, quiet);
+
+    let plans = plan_with(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps, blink);
+    if !quiet {
+        eprintln!(
+            "rendering {} frames ({:.1}s output from {:.1}s recording)…",
+            plans.len(),
+            loaded.timeline.out_duration(),
+            loaded.cast.duration()
+        );
+    }
+    let (cw, ch) = renderer.canvas_size(loaded.cast.cols(), loaded.cast.rows());
+    let mut bytes = Vec::new();
+    let frames = {
+        let mut stream = reel_encode::ApngStream::new(
+            &mut bytes,
+            cw,
+            ch,
+            plans.len() as u32,
+            cfg.output.looping,
+        )?;
+        render_each(&mut renderer, &plans, &loaded.snapshots, |rgba, _, _, dur| {
+            stream.push(rgba, dur).map_err(Into::into)
+        })?;
+        stream.finish()?
+    };
+    std::fs::write(out_path, &bytes)?;
+    if !quiet {
+        eprintln!(
+            "{}: {} — {} frames, lossless truecolor",
+            out_path.display(),
+            human_size(bytes.len() as u64),
+            frames
+        );
+    }
+    Ok(())
+}
+
+/// Caption windows in output time: (start, end, text).
+fn caption_cues(loaded: &Loaded) -> Vec<(f64, f64, String)> {
+    loaded
+        .visuals
+        .iter()
+        .filter_map(|v| match v {
+            VisualOp::Caption { text, at, dur, .. } => {
+                let start = loaded.timeline.project_snapped(*at);
+                let end = (start + dur).min(loaded.timeline.out_duration());
+                (end > start).then(|| (start, end, text.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn render_vtt(cues: &[(f64, f64, String)]) -> String {
+    let ts = |t: f64| {
+        let ms = (t * 1000.0).round() as u64;
+        format!("{:02}:{:02}:{:02}.{:03}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000)
+    };
+    let mut out = String::from("WEBVTT\n\n");
+    for (start, end, text) in cues {
+        out.push_str(&format!("{} --> {}\n{}\n\n", ts(*start), ts(*end), text));
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +392,32 @@ fn build_audio(
     Ok(Some(samples))
 }
 
+/// Printable keypresses for typing reconstruction, in source time.
+fn printable_keys(cast: &Cast, cast_path: &Path) -> Vec<reel_term::KeyPress> {
+    let raw: Vec<(f64, String)> = match ReelMeta::load_sidecar(cast_path) {
+        Some(meta) if !meta.input_events.is_empty() => meta
+            .input_events
+            .into_iter()
+            .filter(|e| e.kind == "key")
+            .map(|e| (e.t, e.value))
+            .collect(),
+        _ => cast
+            .events
+            .iter()
+            .filter(|e| e.kind == EventKind::Input)
+            .map(|e| (e.time, e.data.clone()))
+            .collect(),
+    };
+    raw.iter()
+        .flat_map(|(t, v)| {
+            v.chars()
+                .filter(|c| !c.is_control())
+                .map(|ch| reel_term::KeyPress { t: *t, ch })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// Keystrokes for the audio planner: the `.reelmeta` sidecar when `reel
 /// record` wrote one, else any "i" events an asciinema recording kept.
 fn key_inputs(cast: &Cast, cast_path: &Path) -> Vec<reel_audio::KeyInput> {
@@ -289,6 +475,9 @@ fn grid_changes(snaps: &[Snapshot]) -> Vec<reel_audio::GridChange> {
 
 /// WebM budget ladder: walk the CQ level (and then fps/scale) down until the
 /// file fits, reporting each step like the GIF path does.
+///
+/// Frames stream straight from the renderer into the encoder — nothing
+/// holds the whole video in RAM (a 1080p render used to peak at ~3GB).
 fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -> Result<()> {
     let budget_bytes = match &cfg.output.budget {
         Some(b) => Some(
@@ -307,7 +496,7 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
     )?;
 
     // (label, cq_level, fps, scale)
-    let base_fps = cfg.output.fps;
+    let base_fps = cfg.output.fps.unwrap_or(60);
     let base_scale = cfg.output.scale;
     let ladder: Vec<(String, u32, u32, u32)> = vec![
         ("as configured".into(), 24, base_fps, base_scale),
@@ -317,28 +506,64 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
         ("cq → 55, fps → 15".into(), 55, 15, 1),
     ];
 
-    let mut frames: Option<(u32, u32, Vec<RgbaFrame>)> = None;
+    let mut renderer: Option<Renderer> = None;
     for (i, (label, cq, fps, scale)) in ladder.iter().enumerate() {
         if budget_bytes.is_none() && i > 0 {
             break;
         }
         let mut step_cfg = cfg.clone();
-        step_cfg.output.fps = *fps;
+        step_cfg.output.fps = Some(*fps);
         step_cfg.output.scale = *scale;
-        if frames.as_ref().map(|(f, s, _)| (*f, *s)) != Some((*fps, *scale)) {
-            let (rendered, warns) = render_frames(loaded, &step_cfg, quiet || i > 0)?;
-            if i == 0 {
-                print_warnings(&warns, quiet);
+        let (settings, warns) = settings_from_config(&step_cfg)?;
+        let fps_used = settings.fps;
+        let blink = settings.cursor_blink;
+        // One renderer across rungs keeps the glyph cache warm.
+        let font_warns = match renderer.as_mut() {
+            Some(r) => r.set_settings(settings)?,
+            None => {
+                let (r, w) = Renderer::new(settings)?;
+                renderer = Some(r);
+                w
             }
-            frames = Some((*fps, *scale, rendered));
+        };
+        if i == 0 {
+            print_warnings(&warns, quiet);
+            print_warnings(&font_warns, quiet);
         }
-        let (_, _, ref rendered) = frames.as_ref().unwrap();
+        let r = renderer.as_mut().unwrap();
+        r.fit_exact(loaded.cast.cols(), loaded.cast.rows());
+        let plans = plan_with(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps_used, blink);
+        if i == 0 && !quiet {
+            eprintln!(
+                "rendering {} frames ({:.1}s output from {:.1}s recording)…",
+                plans.len(),
+                loaded.timeline.out_duration(),
+                loaded.cast.duration()
+            );
+        }
 
-        let report = reel_encode::encode_webm(
-            rendered,
-            audio.as_deref(),
-            &WebmOptions { cq_level: *cq, ..Default::default() },
+        let (cw, ch) = r.canvas_size(loaded.cast.cols(), loaded.cast.rows());
+        let mut encoder = reel_encode::WebmEncoder::new(
+            cw,
+            ch,
+            &WebmOptions { cq_level: *cq, cfr_fps: Some(*fps), ..Default::default() },
         )?;
+        render_each(r, &plans, &loaded.snapshots, |rgba, w, h, dur| {
+            encoder.push(rgba, w, h, dur).map_err(Into::into)
+        })?;
+        let cues: Vec<reel_encode::webm::Cue> = if cfg.output.subtitles {
+            caption_cues(loaded)
+                .into_iter()
+                .map(|(start, end, text)| reel_encode::webm::Cue {
+                    start_ms: (start * 1000.0).round() as i64,
+                    end_ms: (end * 1000.0).round() as i64,
+                    text,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let report = encoder.finish_with_cues(audio.as_deref(), &cues)?;
         let size = report.bytes.len() as u64;
         let fits = budget_bytes.map(|b| size <= b).unwrap_or(true);
         if fits || i == ladder.len() - 1 {
@@ -407,7 +632,7 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
     }
 
     // (label, fps, scale, max_colors)
-    let base_fps = cfg.output.fps;
+    let base_fps = cfg.output.fps.unwrap_or(30);
     let base_scale = cfg.output.scale;
     let ladder: Vec<(String, u32, u32, u16)> = vec![
         ("as configured".into(), base_fps, base_scale, 256),
@@ -418,7 +643,11 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
         ("fps → 10, palette → 64".into(), 10, 1, 64),
     ];
 
-    let mut last_err = None;
+    // Two streaming passes per rung (palette scan, then write): twice the
+    // render work of keeping every frame, but flat memory — a 1080p render
+    // used to hold gigabytes of RGBA. The shared renderer keeps the glyph
+    // cache warm, so the second pass is much cheaper than the first.
+    let mut renderer: Option<Renderer> = None;
     let mut prev: Option<(u32, u32)> = None;
     for (i, (label, fps, scale, colors)) in ladder.iter().enumerate() {
         if budget_bytes.is_none() && i > 0 {
@@ -431,23 +660,62 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
         prev = Some((*fps, *scale));
 
         let mut step_cfg = cfg.clone();
-        step_cfg.output.fps = *fps;
+        step_cfg.output.fps = Some(*fps);
         step_cfg.output.scale = *scale;
-        let (frames, warns) = render_frames(loaded, &step_cfg, quiet || i > 0)?;
+        let (settings, warns) = settings_from_config(&step_cfg)?;
+        let fps_used = settings.fps;
+        let blink = settings.cursor_blink;
+        let font_warns = match renderer.as_mut() {
+            Some(r) => r.set_settings(settings)?,
+            None => {
+                let (r, w) = Renderer::new(settings)?;
+                renderer = Some(r);
+                w
+            }
+        };
         if i == 0 {
             print_warnings(&warns, quiet);
+            print_warnings(&font_warns, quiet);
         }
-        let report = reel_encode::encode_gif(
-            &frames,
-            &GifOptions { looping: step_cfg.output.looping, max_colors: *colors },
-        )?;
-        let size = report.bytes.len() as u64;
+        let r = renderer.as_mut().unwrap();
+        r.fit_exact(loaded.cast.cols(), loaded.cast.rows());
+        let plans = plan_with(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps_used, blink);
+        if i == 0 && !quiet {
+            eprintln!(
+                "rendering {} frames ({:.1}s output from {:.1}s recording)…",
+                plans.len(),
+                loaded.timeline.out_duration(),
+                loaded.cast.duration()
+            );
+        }
+
+        let mut builder = reel_encode::GifPaletteBuilder::new(*colors);
+        render_each(r, &plans, &loaded.snapshots, |rgba, _, _, _| {
+            builder.feed(rgba);
+            Ok(())
+        })?;
+        let (cw, ch) = r.canvas_size(loaded.cast.cols(), loaded.cast.rows());
+        let mut bytes = Vec::new();
+        let (frames_written, palette) = {
+            let mut stream = reel_encode::GifStream::new(
+                &mut bytes,
+                cw,
+                ch,
+                builder.finish(),
+                step_cfg.output.looping,
+            )?;
+            render_each(r, &plans, &loaded.snapshots, |rgba, _, _, dur| {
+                stream.push(rgba, dur).map_err(Into::into)
+            })?;
+            stream.finish()?
+        };
+        let size = bytes.len() as u64;
 
         let fits = budget_bytes.map(|b| size <= b).unwrap_or(true);
         if fits || i == ladder.len() - 1 {
-            std::fs::write(out_path, &report.bytes)?;
+            std::fs::write(out_path, &bytes)?;
             if !quiet {
-                let palette = match report.palette {
+                let palette = match palette {
                     PaletteMode::Exact(n) => format!("exact {n}-color palette (lossless)"),
                     PaletteMode::Quantized(n) => format!("quantized to {n} colors"),
                 };
@@ -455,7 +723,7 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
                     "{}: {} — {} frames, {}, fps cap {}, scale {}{}",
                     out_path.display(),
                     human_size(size),
-                    report.frames,
+                    frames_written,
                     palette,
                     fps,
                     scale,
@@ -481,9 +749,8 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
                 ladder[i + 1].0
             );
         }
-        last_err = Some(anyhow!("budget not reachable"));
     }
-    Err(last_err.unwrap_or_else(|| anyhow!("no ladder step produced output")))
+    Err(anyhow!("no ladder step produced output"))
 }
 
 pub fn shot(path: &Path, at: &str, out: Option<PathBuf>, template: Option<String>) -> Result<()> {
@@ -495,8 +762,10 @@ pub fn shot(path: &Path, at: &str, out: Option<PathBuf>, template: Option<String
     let cfg = loaded.file.config.clone();
     let (settings, _) = settings_from_config(&cfg)?;
     let fps = settings.fps;
+    let settings_cursor_blink = settings.cursor_blink;
     let (mut renderer, _) = Renderer::new(settings)?;
-    let frames = plan(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps);
+    renderer.fit_exact(loaded.cast.cols(), loaded.cast.rows());
+    let frames = plan_with(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps, settings_cursor_blink);
     let frame = frames
         .iter()
         .rev()
@@ -596,10 +865,11 @@ pub fn render_for_watch(
     if !reuse {
         let cast = Cast::load(&cast_path)
             .with_context(|| format!("loading cast {}", cast_path.display()))?;
-        let snapshots = reel_term::replay(&cast)?;
+        let mut snapshots = reel_term::replay(&cast)?;
         if !uniform_dims(&snapshots) {
             bail!("this cast resizes mid-session, which reel can't render yet");
         }
+        reel_term::smooth_typing(&mut snapshots, &printable_keys(&cast, &cast_path));
         cache.cast = Some((cast_path.clone(), mtime, cast, snapshots));
     }
     let (_, _, cast, snapshots) = cache.cast.as_ref().unwrap();
@@ -609,6 +879,7 @@ pub fn render_for_watch(
 
     let (settings, _) = settings_from_config(&file.config)?;
     let fps = settings.fps;
+    let watch_blink = settings.cursor_blink;
     match cache.renderer.as_mut() {
         Some(r) => {
             r.set_settings(settings)?;
@@ -617,7 +888,7 @@ pub fn render_for_watch(
     }
     let renderer = cache.renderer.as_mut().unwrap();
 
-    let frames = plan(&timeline, snapshots, &program.visuals, fps);
+    let frames = plan_with(&timeline, snapshots, &program.visuals, fps, watch_blink);
     let mut rgba = Vec::with_capacity(frames.len());
     for f in &frames {
         let pix = renderer.render_frame(&snapshots[f.snapshot], f);

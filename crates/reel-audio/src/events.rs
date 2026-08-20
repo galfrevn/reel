@@ -82,7 +82,7 @@ pub struct AudioPlan {
 /// Minimum output-time gap between keyboard events. Speeding a region up
 /// compresses events together; past this density we *drop* keys rather than
 /// let them smear into noise (spec §8.1).
-const KEY_MIN_GAP: f64 = 0.04;
+const KEY_MIN_GAP: f64 = 0.03;
 /// Keystroke sounds snap forward to the grid change they caused, when one
 /// lands within this window. TUIs repaint on their own tick, often well
 /// after the key event — and the viewer can only sync sound to what they
@@ -146,8 +146,8 @@ pub fn plan_events(
         for key in key_list {
             // Humanization is drawn per source event *before* any drop, so
             // editing the timeline doesn't reshuffle surviving keys' sounds.
-            let hp = rng.range(-0.03, 0.03);
-            let hg = rng.range(-0.15, 0.15);
+            let hp = rng.range(-0.06, 0.06);
+            let hg = rng.range(-0.18, 0.18);
             if key.kind == KeyKind::Other || muted(key.src_time) {
                 continue;
             }
@@ -364,7 +364,7 @@ mod tests {
         let keys: Vec<KeyInput> = (0..100).map(|i| key(i as f64 * 0.1)).collect();
         let plan = plan_events(&tl, &[], &keys, &[], &cfg_keyboard()).unwrap();
         let presses = plan.events.iter().filter(|e| e.name == "press").count();
-        assert!(presses <= 26, "expected thinning, got {presses} presses");
+        assert!(presses <= 34, "expected thinning, got {presses} presses");
         assert!(presses >= 10, "over-thinned: {presses} presses");
     }
 

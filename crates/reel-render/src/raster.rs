@@ -9,18 +9,30 @@ pub struct GridStyle<'a> {
     pub theme: &'a Theme,
     pub font_size: f32,
     pub line_height: f32,
+    /// Draw the cursor (false during a blink's off phase).
+    pub cursor_visible: bool,
 }
 
 /// Renders the full grid at the given font size. The same routine serves the
 /// base view and the zoom view (at a larger size), so zoomed text is
 /// re-rasterized, never upscaled.
 pub fn raster_grid(r: &mut Rasterizer, snap: &Snapshot, style: &GridStyle) -> Pixmap {
-    let m = r.fonts.cell_metrics(style.font_size, style.line_height);
-    let w = (snap.cols as f32 * m.cell_w).ceil() as u32;
-    let h = (snap.rows as f32 * m.cell_h).ceil() as u32;
-    let mut pix = Pixmap::new(w.max(1), h.max(1)).expect("grid pixmap");
+    let mut pix = Pixmap::new(1, 1).expect("pixmap");
+    raster_grid_into(r, snap, style, &mut pix);
+    pix
+}
 
-    fill(&mut pix, style.theme.bg);
+/// Like [`raster_grid`], but reuses `pix` when the size already matches —
+/// per-frame buffer churn is what used to balloon renders to gigabytes.
+pub fn raster_grid_into(r: &mut Rasterizer, snap: &Snapshot, style: &GridStyle, pix: &mut Pixmap) {
+    let m = r.fonts.cell_metrics(style.font_size, style.line_height);
+    let w = ((snap.cols as f32 * m.cell_w).ceil() as u32).max(1);
+    let h = ((snap.rows as f32 * m.cell_h).ceil() as u32).max(1);
+    if pix.width() != w || pix.height() != h {
+        *pix = Pixmap::new(w, h).expect("grid pixmap");
+    }
+
+    fill(pix, style.theme.bg);
 
     let ov = &snap.palette_overrides;
     // Backgrounds first (a glyph may overhang its cell).
@@ -33,13 +45,17 @@ pub fn raster_grid(r: &mut Rasterizer, snap: &Snapshot, style: &GridStyle) -> Pi
                 let x1 = ((col + 1) as f32 * m.cell_w).round() as i32;
                 let y0 = (row as f32 * m.cell_h).round() as i32;
                 let y1 = ((row + 1) as f32 * m.cell_h).round() as i32;
-                fill_rect(&mut pix, x0, y0, x1 - x0, y1 - y0, bg);
+                fill_rect(pix, x0, y0, x1 - x0, y1 - y0, bg);
             }
         }
     }
 
     // Cursor under the glyph so the char stays readable on top.
-    let cursor_cell_fg = draw_cursor(&mut pix, snap, style, m.cell_w, m.cell_h);
+    let cursor_cell_fg = if style.cursor_visible {
+        draw_cursor(pix, snap, style, m.cell_w, m.cell_h)
+    } else {
+        None
+    };
 
     for row in 0..snap.rows {
         for col in 0..snap.cols {
@@ -71,10 +87,10 @@ pub fn raster_grid(r: &mut Rasterizer, snap: &Snapshot, style: &GridStyle) -> Pi
                 let gy = y.round() as i32 + m.baseline as i32 - g.top;
                 match &g.pixels {
                     GlyphPixels::Mask(mask) => {
-                        blit_mask(&mut pix, gx, gy, g.width, g.height, mask, fg)
+                        blit_mask(pix, gx, gy, g.width, g.height, mask, fg)
                     }
                     GlyphPixels::Color(rgba) => {
-                        blit_rgba(&mut pix, gx, gy, g.width, g.height, rgba)
+                        blit_rgba(pix, gx, gy, g.width, g.height, rgba)
                     }
                 }
             }
@@ -83,18 +99,43 @@ pub fn raster_grid(r: &mut Rasterizer, snap: &Snapshot, style: &GridStyle) -> Pi
             if cell.attrs.contains(CellAttrs::UNDERLINE) {
                 let ly = (y + m.baseline + (style.font_size * 0.11).max(1.5)).round() as i32;
                 let lh = (style.font_size / 14.0).max(1.0).round() as i32;
-                fill_rect(&mut pix, x.round() as i32, ly, span_w.round() as i32, lh, fg);
+                fill_rect(pix, x.round() as i32, ly, span_w.round() as i32, lh, fg);
             }
             if cell.attrs.contains(CellAttrs::STRIKEOUT) {
                 let ly = (y + m.baseline - style.font_size * 0.3).round() as i32;
                 let lh = (style.font_size / 14.0).max(1.0).round() as i32;
-                fill_rect(&mut pix, x.round() as i32, ly, span_w.round() as i32, lh, fg);
+                fill_rect(pix, x.round() as i32, ly, span_w.round() as i32, lh, fg);
             }
             let _ = bg;
         }
     }
 
-    pix
+    composite_images(pix, snap, m.cell_w, m.cell_h);
+}
+
+/// Draws sixel/kitty images over the rendered grid (experimental).
+fn composite_images(pix: &mut Pixmap, snap: &Snapshot, cell_w: f32, cell_h: f32) {
+    use tiny_skia::{FilterQuality, PixmapPaint, Transform};
+    for img in &snap.images {
+        let Some(mut src) = Pixmap::new(img.width, img.height) else { continue };
+        for (i, px) in img.rgba.chunks_exact(4).enumerate() {
+            let a = px[3] as u16;
+            let pm = |v: u8| ((v as u16 * a) / 255) as u8;
+            src.pixels_mut()[i] =
+                PremultipliedColorU8::from_rgba(pm(px[0]), pm(px[1]), pm(px[2]), px[3])
+                    .unwrap_or(PremultipliedColorU8::TRANSPARENT);
+        }
+        let sx = (img.cols as f32 * cell_w) / img.width as f32;
+        let sy = (img.rows as f32 * cell_h) / img.height as f32;
+        pix.draw_pixmap(
+            0,
+            0,
+            src.as_ref(),
+            &PixmapPaint { quality: FilterQuality::Bilinear, ..Default::default() },
+            Transform::from_row(sx, 0.0, 0.0, sy, img.col as f32 * cell_w, img.row as f32 * cell_h),
+            None,
+        );
+    }
 }
 
 fn cell_colors(
@@ -284,7 +325,7 @@ mod tests {
         let s = snap(r#"[0.1, "o", "\u001b[31mhello\u001b[0m"]"#, 20, 4);
         let theme = builtin("reel-dark").unwrap();
         let mut r = Rasterizer::new(None).unwrap().0;
-        let pix = raster_grid(&mut r, &s, &GridStyle { theme: &theme, font_size: 17.0, line_height: 1.4 });
+        let pix = raster_grid(&mut r, &s, &GridStyle { theme: &theme, font_size: 17.0, line_height: 1.4, cursor_visible: true });
         assert!(pix.width() > 100 && pix.height() > 40);
         // Some pixel in the first row band should be red-ish (fg Indexed(1)).
         let red = theme.ansi[1];
@@ -299,7 +340,7 @@ mod tests {
         let s = snap(r#"[0.1, "o", "x"]"#, 10, 2);
         let theme = builtin("reel-dark").unwrap();
         let mut r = Rasterizer::new(None).unwrap().0;
-        let pix = raster_grid(&mut r, &s, &GridStyle { theme: &theme, font_size: 16.0, line_height: 1.2 });
+        let pix = raster_grid(&mut r, &s, &GridStyle { theme: &theme, font_size: 16.0, line_height: 1.2, cursor_visible: true });
         let cur = theme.cursor;
         let found = pix.pixels().iter().any(|p| {
             (p.red() as i32 - cur.r as i32).abs() < 12

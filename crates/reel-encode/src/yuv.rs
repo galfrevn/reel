@@ -17,16 +17,30 @@ fn ycbcr(r: i32, g: i32, b: i32) -> (u8, i32, i32) {
     (y.clamp(16, 235) as u8, cb, cr)
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // kept as the tested reference path
 /// Converts straight RGBA to I420. Odd dimensions are handled by clamping
 /// the 2x2 chroma window at the edges.
 pub fn rgba_to_i420(width: u32, height: u32, rgba: &[u8]) -> I420Frame {
+    let mut out = I420Frame { width, height, y: Vec::new(), u: Vec::new(), v: Vec::new() };
+    rgba_to_i420_into(width, height, rgba, &mut out);
+    out
+}
+
+/// Buffer-reusing variant of [`rgba_to_i420`].
+pub fn rgba_to_i420_into(width: u32, height: u32, rgba: &[u8], out: &mut I420Frame) {
     let w = width as usize;
     let h = height as usize;
     let cw = w.div_ceil(2);
     let ch = h.div_ceil(2);
-    let mut y_plane = vec![0u8; w * h];
-    let mut u_plane = vec![0u8; cw * ch];
-    let mut v_plane = vec![0u8; cw * ch];
+    out.width = width;
+    out.height = height;
+    out.y.clear();
+    out.y.resize(w * h, 0);
+    out.u.clear();
+    out.u.resize(cw * ch, 0);
+    out.v.clear();
+    out.v.resize(cw * ch, 0);
+    let (y_plane, u_plane, v_plane) = (&mut out.y, &mut out.u, &mut out.v);
 
     for cy in 0..ch {
         for cx in 0..cw {
@@ -54,7 +68,6 @@ pub fn rgba_to_i420(width: u32, height: u32, rgba: &[u8]) -> I420Frame {
             v_plane[cy * cw + cx] = (128 + sum_cr / n).clamp(16, 240) as u8;
         }
     }
-    I420Frame { width, height, y: y_plane, u: u_plane, v: v_plane }
 }
 
 #[cfg(test)]

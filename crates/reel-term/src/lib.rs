@@ -10,6 +10,11 @@
 //!    are folded into one snapshot, and synchronized-output (`?2026`) blocks
 //!    are atomic because the parser buffers them until ESU.
 
+pub mod graphics;
+pub mod redact;
+pub mod typing;
+pub use typing::{smooth_typing, KeyPress};
+
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::Point;
@@ -105,6 +110,8 @@ pub struct Snapshot {
     pub cursor: Cursor,
     /// Palette slots the application overrode via OSC 4, as (index, rgb).
     pub palette_overrides: Vec<(u8, (u8, u8, u8))>,
+    /// Sixel / kitty-protocol images visible in this frame (experimental).
+    pub images: Vec<graphics::PlacedImage>,
 }
 
 impl Snapshot {
@@ -187,6 +194,51 @@ impl Dimensions for GridSize {
     }
 }
 
+/// Incremental emulator for live capture (`reel run`): feed output bytes as
+/// they arrive, ask for the visible text — the engine behind `wait_text`.
+pub struct LiveTerm {
+    term: Term<NullListener>,
+    parser: Processor,
+}
+
+impl LiveTerm {
+    pub fn new(cols: u16, rows: u16) -> Result<Self, TermError> {
+        if cols > 1000 || rows > 500 || cols == 0 || rows == 0 {
+            return Err(TermError::TooLarge(cols, rows));
+        }
+        let config = TermConfig { scrolling_history: 0, ..Default::default() };
+        let term = Term::new(
+            config,
+            &GridSize { cols: cols as usize, rows: rows as usize },
+            NullListener,
+        );
+        Ok(LiveTerm { term, parser: Processor::new() })
+    }
+
+    pub fn feed(&mut self, bytes: &[u8]) {
+        self.parser.advance(&mut self.term, bytes);
+    }
+
+    pub fn resize(&mut self, cols: u16, rows: u16) {
+        self.term.resize(GridSize { cols: cols as usize, rows: rows as usize });
+    }
+
+    /// The full visible text, rows joined with newlines.
+    pub fn text(&self) -> String {
+        take_snapshot(&self.term, 0.0).to_text()
+    }
+
+    pub fn contains(&self, needle: &str) -> bool {
+        self.text().contains(needle)
+    }
+
+    /// Current cursor position, zero-based (col, row) — for CPR answers.
+    pub fn cursor(&self) -> (u16, u16) {
+        let p = self.term.grid().cursor.point;
+        (p.column.0 as u16, p.line.0.max(0) as u16)
+    }
+}
+
 /// Replays a cast and returns one snapshot per *visible change*, in source
 /// time. The first snapshot is at t=0 (the empty grid), so the timeline can
 /// always sample a state before the first output.
@@ -206,6 +258,8 @@ pub fn replay(cast: &Cast) -> Result<Vec<Snapshot>, TermError> {
 
     let mut snapshots: Vec<Snapshot> = vec![take_snapshot(&term, 0.0)];
     let mut last_hash = snapshots[0].content_hash();
+    let mut gfx = graphics::GraphicsState::default();
+    let mut last_images_len = 0usize;
 
     let outputs: Vec<_> = cast
         .events
@@ -215,7 +269,40 @@ pub fn replay(cast: &Cast) -> Result<Vec<Snapshot>, TermError> {
 
     for (i, ev) in outputs.iter().enumerate() {
         match ev.kind {
-            EventKind::Output => parser.advance(&mut term, ev.data.as_bytes()),
+            EventKind::Output => {
+                for piece in gfx.process(ev.data.as_bytes()) {
+                    match piece {
+                        graphics::Piece::Text(bytes) => {
+                            if graphics::clears_screen(&bytes) {
+                                gfx.images.clear();
+                            }
+                            parser.advance(&mut term, &bytes);
+                        }
+                        graphics::Piece::Image { rgba, width, height, cols: ic, rows: ir } => {
+                            let cur = term.grid().cursor.point;
+                            let cell_cols = ic.unwrap_or_else(|| {
+                                (width as f32 / graphics::SIXEL_CELL.0).ceil() as u16
+                            });
+                            let cell_rows = ir.unwrap_or_else(|| {
+                                (height as f32 / graphics::SIXEL_CELL.1).ceil() as u16
+                            });
+                            let (col, row) = (cur.column.0 as u16, cur.line.0.max(0) as u16);
+                            // Redrawing the same anchor replaces the image.
+                            gfx.images.retain(|im| (im.col, im.row) != (col, row));
+                            gfx.images.push(graphics::PlacedImage {
+                                col,
+                                row,
+                                cols: cell_cols.min(cols),
+                                rows: cell_rows.min(rows),
+                                width,
+                                height,
+                                rgba: std::sync::Arc::new(rgba),
+                            });
+                        }
+                        graphics::Piece::ClearImages => gfx.images.clear(),
+                    }
+                }
+            }
             EventKind::Resize => {
                 if let Some((c, r)) = parse_resize(&ev.data) {
                     term.resize(GridSize { cols: c as usize, rows: r as usize });
@@ -237,10 +324,12 @@ pub fn replay(cast: &Cast) -> Result<Vec<Snapshot>, TermError> {
             continue;
         }
 
-        let snap = take_snapshot(&term, ev.time);
+        let mut snap = take_snapshot(&term, ev.time);
+        snap.images = gfx.images.clone();
         let hash = snap.content_hash();
-        if hash != last_hash {
+        if hash != last_hash || gfx.images.len() != last_images_len {
             last_hash = hash;
+            last_images_len = gfx.images.len();
             snapshots.push(snap);
         }
     }
@@ -298,7 +387,7 @@ fn take_snapshot<L: EventListener>(term: &Term<L>, src_time: f64) -> Snapshot {
         }
     }
 
-    Snapshot { src_time, cols, rows, cells, cursor, palette_overrides }
+    Snapshot { src_time, cols, rows, cells, cursor, palette_overrides, images: Vec::new() }
 }
 
 fn cursor_state<L: EventListener>(term: &Term<L>) -> Cursor {
@@ -386,6 +475,15 @@ mod tests {
     fn cast(body: &str) -> Cast {
         let text = format!("{}\n{}", r#"{"version": 2, "width": 20, "height": 4}"#, body);
         Cast::parse(&text).unwrap()
+    }
+
+    #[test]
+    fn live_term_sees_streamed_text() {
+        let mut lt = LiveTerm::new(40, 5).unwrap();
+        lt.feed(b"hel");
+        lt.feed(b"lo \x1b[32mworld\x1b[0m");
+        assert!(lt.contains("hello world"));
+        assert!(!lt.contains("goodbye"));
     }
 
     #[test]

@@ -25,8 +25,8 @@ pub enum FormatError {
     Script { line: usize, msg: String },
     #[error("line {line}: `{op}` is a script-mode input op, but this file is in edit mode ([source].cast is set) — edit files may only shape the timeline")]
     InputOpInEditMode { line: usize, op: String },
-    #[error("script mode (no [source].cast) is not implemented yet — record with `reel record` or asciinema, then set [source] cast = \"...\"")]
-    ScriptModeUnsupported,
+    #[error("this file has no [source].cast and no script ops — either point it at a recording or add a script (`run \"cmd\"`, `type`, `wait_text`…) and use `reel run`")]
+    NothingToDo,
 }
 
 fn err(line: usize, msg: impl Into<String>) -> FormatError {
@@ -47,11 +47,11 @@ pub struct ReelConfig {
     #[serde(default)]
     pub template: TemplateCfg,
     #[serde(default)]
-    pub terminal: Option<toml::Value>,
+    pub terminal: TerminalCfg,
     #[serde(default)]
     pub env: Option<toml::Value>,
     #[serde(default)]
-    pub typing: Option<toml::Value>,
+    pub typing: TypingCfg,
     #[serde(default)]
     pub style: StyleCfg,
     #[serde(default)]
@@ -64,6 +64,36 @@ pub struct SourceCfg {
     pub cast: String,
 }
 
+/// `[terminal]` — the PTY geometry script mode captures at.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TerminalCfg {
+    pub cols: u16,
+    pub rows: u16,
+}
+
+impl Default for TerminalCfg {
+    fn default() -> Self {
+        TerminalCfg { cols: 120, rows: 36 }
+    }
+}
+
+/// `[typing]` — how script mode's `type` op paces keystrokes.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TypingCfg {
+    /// Mean delay between keys, in milliseconds.
+    pub delay_ms: u64,
+    /// Human jitter around the mean, 0..1 (0.35 = ±35%).
+    pub jitter: f64,
+}
+
+impl Default for TypingCfg {
+    fn default() -> Self {
+        TypingCfg { delay_ms: 70, jitter: 0.35 }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OutputCfg {
@@ -72,17 +102,24 @@ pub struct OutputCfg {
     pub looping: bool,
     /// Target size like "800kb" / "2mb"; the encoder degrades to fit.
     pub budget: Option<String>,
-    /// Frame-rate cap; frames are emitted on change, not on a clock.
-    pub fps: u32,
+    /// Frame-rate cap / video frame rate. Defaults per format: 30 for GIF
+    /// (size), 60 for WebM (played at constant frame rate).
+    pub fps: Option<u32>,
     /// Supersampling factor for crisp text.
     pub scale: u32,
     /// Canvas aspect ratio like "16:9"; the canvas grows (never crops) to fit.
     pub aspect: Option<String>,
+    /// Exact canvas size like "1920x1080": reel solves the font size to fit
+    /// and pads (centered) to land on these dimensions precisely.
+    pub size: Option<String>,
+    /// Write captions as real subtitles too: a WebVTT sidecar next to the
+    /// output, plus an in-band text track in .webm output.
+    pub subtitles: bool,
 }
 
 impl Default for OutputCfg {
     fn default() -> Self {
-        OutputCfg { file: None, looping: true, budget: None, fps: 30, scale: 2, aspect: None }
+        OutputCfg { file: None, looping: true, budget: None, fps: None, scale: 2, aspect: None, size: None, subtitles: false }
     }
 }
 
@@ -110,6 +147,8 @@ pub struct StyleCfg {
     /// macos | rounded | plain | none
     pub window: Option<String>,
     pub padding: Option<u32>,
+    /// Blink the cursor during long stills (like a real terminal). Default on.
+    pub cursor_blink: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -144,6 +183,14 @@ impl AudioCfg {
             }
         }
     }
+}
+
+/// Parses an exact canvas size like "1920x1080".
+pub fn parse_size(s: &str) -> Option<(u32, u32)> {
+    let (w, h) = s.trim().split_once(['x', 'X'])?;
+    let w: u32 = w.trim().parse().ok()?;
+    let h: u32 = h.trim().parse().ok()?;
+    ((64..=7680).contains(&w) && (64..=4320).contains(&h)).then_some((w, h))
 }
 
 /// Parses an aspect ratio like "16:9", "4:3", or "1.78" into width/height.
@@ -194,17 +241,38 @@ pub enum RawOp {
     Sound { name: String, at: TimeExpr },
     Mute { range: (TimeExpr, TimeExpr) },
     Volume { level: f64, range: (TimeExpr, TimeExpr) },
+    /// Mask every grid cell whose row text matches this regex.
+    Redact { pattern: String },
 }
 
 const INPUT_OPS: &[&str] = &[
-    "run", "type", "paste", "key", "enter", "mouse", "resize", "capture_live", "wait_idle",
-    "wait_text", "wait_gone", "sleep",
+    "run", "type", "key", "enter", "wait_idle", "wait_text", "sleep",
 ];
+
+/// Script-mode ops: drive a live program under a PTY (`reel run`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScriptOp {
+    /// Spawn this command (must come first).
+    Run { command: String },
+    /// Type text with human-ish pacing, recording each key.
+    Type { text: String },
+    /// Press a named key: enter, esc, tab, space, backspace, up/down/…,
+    /// ctrl+<letter>, or a literal single character.
+    Key { key: String },
+    /// Wait a fixed time.
+    Sleep { dur: f64 },
+    /// Wait until the given text appears anywhere on screen.
+    WaitText { text: String, timeout: f64 },
+    /// Wait until no output has arrived for `quiet` seconds.
+    WaitIdle { quiet: f64, timeout: f64 },
+}
 
 #[derive(Debug)]
 pub struct ReelFile {
     pub config: ReelConfig,
     pub ops: Vec<RawOp>,
+    /// Script-mode ops; non-empty only when `[source].cast` is absent.
+    pub script: Vec<ScriptOp>,
 }
 
 /// The fully resolved edit program, produced once the cast duration is known.
@@ -213,17 +281,18 @@ pub struct EditProgram {
     pub edits: EditOps,
     pub visuals: Vec<VisualOp>,
     pub audio: Vec<AudioOp>,
+    /// Regex patterns whose matches get masked out of every frame.
+    pub redactions: Vec<String>,
 }
 
 impl ReelFile {
     pub fn parse(text: &str) -> Result<Self, FormatError> {
         let (front, body, body_first_line) = split_front_matter(text)?;
         let config: ReelConfig = toml::from_str(front)?;
-        if config.source.is_none() {
-            return Err(FormatError::ScriptModeUnsupported);
-        }
+        let edit_mode = config.source.is_some();
 
         let mut ops = Vec::new();
+        let mut script = Vec::new();
         for (i, raw_line) in body.lines().enumerate() {
             let line_no = body_first_line + i;
             let line = strip_comment(raw_line);
@@ -236,14 +305,21 @@ impl ReelFile {
                 err(line_no, "expected an operation name at the start of the line")
             })?;
             if INPUT_OPS.contains(&op_name) {
-                return Err(FormatError::InputOpInEditMode {
-                    line: line_no,
-                    op: op_name.to_string(),
-                });
+                if edit_mode {
+                    return Err(FormatError::InputOpInEditMode {
+                        line: line_no,
+                        op: op_name.to_string(),
+                    });
+                }
+                script.push(parse_script_op(op_name, &tokens[1..], line_no)?);
+            } else {
+                ops.push(parse_op(op_name, &tokens[1..], line_no)?);
             }
-            ops.push(parse_op(op_name, &tokens[1..], line_no)?);
         }
-        Ok(ReelFile { config, ops })
+        if !edit_mode && script.is_empty() {
+            return Err(FormatError::NothingToDo);
+        }
+        Ok(ReelFile { config, ops, script })
     }
 
     /// Resolves all time expressions against the recording duration and
@@ -291,6 +367,7 @@ impl ReelFile {
                 RawOp::Volume { level, range: r } => {
                     p.audio.push(AudioOp::Volume { level: *level, range: range(r) })
                 }
+                RawOp::Redact { pattern } => p.redactions.push(pattern.clone()),
             }
         }
         Ok(p)
@@ -528,6 +605,40 @@ impl<'a> Args<'a> {
     }
 }
 
+fn parse_script_op(name: &str, toks: &[Token], line: usize) -> Result<ScriptOp, FormatError> {
+    let mut a = Args { toks, pos: 0, line, op: name };
+    let op = match name {
+        "run" => ScriptOp::Run { command: a.string()? },
+        "type" => ScriptOp::Type { text: a.string()? },
+        "key" => ScriptOp::Key { key: a.word()?.to_string() },
+        "enter" => ScriptOp::Key { key: "enter".into() },
+        "sleep" => ScriptOp::Sleep { dur: a.duration()? },
+        "wait_text" => {
+            let text = a.string()?;
+            let timeout = if a.peek_word() == Some("timeout") {
+                a.keyword("timeout")?;
+                a.duration()?
+            } else {
+                30.0
+            };
+            ScriptOp::WaitText { text, timeout }
+        }
+        "wait_idle" => {
+            let quiet = a.duration()?;
+            let timeout = if a.peek_word() == Some("timeout") {
+                a.keyword("timeout")?;
+                a.duration()?
+            } else {
+                60.0
+            };
+            ScriptOp::WaitIdle { quiet, timeout }
+        }
+        other => return Err(err(line, format!("unknown script op `{other}`"))),
+    };
+    a.done()?;
+    Ok(op)
+}
+
 fn to_cell(v: i64, line: usize, what: &str) -> Result<u16, FormatError> {
     u16::try_from(v).map_err(|_| err(line, format!("{what} must be a non-negative cell coordinate, got {v}")))
 }
@@ -621,6 +732,7 @@ fn parse_op(name: &str, toks: &[Token], line: usize) -> Result<RawOp, FormatErro
             a.keyword("at")?;
             RawOp::Sound { name, at: a.time()? }
         }
+        "redact" => RawOp::Redact { pattern: a.string()? },
         "mute" => RawOp::Mute { range: a.time_range()? },
         "volume" => {
             let level = a
@@ -714,9 +826,21 @@ freeze  last 1.5s
     }
 
     #[test]
-    fn script_mode_reports_unsupported() {
-        let text = "---\n[output]\nfile = \"x.gif\"\n---\ntype \"hi\"\n";
-        assert!(matches!(ReelFile::parse(text).unwrap_err(), FormatError::ScriptModeUnsupported));
+    fn script_mode_parses_ops_and_edits_together() {
+        let text = "---\n[terminal]\ncols = 100\nrows = 30\n---\nrun \"opencode\"\nsleep 2s\ntype \"hello\"\nenter\nwait_text \"Hello!\" timeout 20s\nwait_idle 2s\nkey ctrl+c\nfreeze last 1s\n";
+        let f = ReelFile::parse(text).unwrap();
+        assert_eq!(f.config.terminal.cols, 100);
+        assert_eq!(f.script.len(), 7);
+        assert_eq!(f.script[0], ScriptOp::Run { command: "opencode".into() });
+        assert_eq!(f.script[4], ScriptOp::WaitText { text: "Hello!".into(), timeout: 20.0 });
+        assert_eq!(f.script[5], ScriptOp::WaitIdle { quiet: 2.0, timeout: 60.0 });
+        assert_eq!(f.ops.len(), 1, "edit ops coexist with the script");
+    }
+
+    #[test]
+    fn empty_no_source_file_is_an_error() {
+        let text = "---\n[output]\nfile = \"x.gif\"\n---\n";
+        assert!(matches!(ReelFile::parse(text).unwrap_err(), FormatError::NothingToDo));
     }
 
     #[test]

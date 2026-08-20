@@ -5,7 +5,6 @@
 
 use reel_term::Snapshot;
 use reel_timeline::{CaptionPos, Timeline, VisualOp};
-use std::collections::BTreeSet;
 
 /// Camera state for one frame. `zoom == 1.0` means the base view.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -36,6 +35,8 @@ pub struct FramePlan {
     pub captions: Vec<CaptionDraw>,
     /// Highlight rects in cell coords (col, row, w, h).
     pub highlights: Vec<(u16, u16, u16, u16)>,
+    /// Whether the cursor is drawn (false during a blink's off phase).
+    pub cursor_on: bool,
 }
 
 /// A zoom/pan op projected into output time.
@@ -68,11 +69,27 @@ struct HighlightWindow {
 
 const RAMP_MAX: f64 = 0.45;
 
+/// Half-period of the synthetic cursor blink (the classic ~530ms).
+const BLINK_HALF: f64 = 0.53;
+
 pub fn plan(
     timeline: &Timeline,
     snapshots: &[Snapshot],
     visuals: &[VisualOp],
     fps: u32,
+) -> Vec<FramePlan> {
+    plan_with(timeline, snapshots, visuals, fps, false)
+}
+
+/// Like [`plan`], with a synthetic cursor blink during long stills — real
+/// terminals blink, and a frozen block cursor is what makes long pauses in
+/// a demo read as "the video hung".
+pub fn plan_with(
+    timeline: &Timeline,
+    snapshots: &[Snapshot],
+    visuals: &[VisualOp],
+    fps: u32,
+    cursor_blink: bool,
 ) -> Vec<FramePlan> {
     let fps = fps.clamp(1, 120) as f64;
     let step = 1.0 / fps;
@@ -128,62 +145,80 @@ pub fn plan(
         }
     }
 
-    // --- Collect emission times (quantized to the fps grid) --------------
-    let q = |t: f64| -> i64 { (t.clamp(0.0, out_dur) * fps).round() as i64 };
-    let mut ticks: BTreeSet<i64> = BTreeSet::new();
-    ticks.insert(0);
-    ticks.insert(q(out_dur));
+    // --- Collect emission times (exact, never snapped to a grid) ---------
+    // Snapping change times to an fps grid aliases against sources with
+    // their own cadence (a 25Hz spinner on a 30fps grid judders 33/67ms);
+    // exact timestamps keep motion even. The fps cap only *coalesces*
+    // changes that land inside the same 1/fps window.
+    let mut raw: Vec<f64> = Vec::new();
+    raw.push(0.0);
+    raw.push(out_dur);
 
     for s in snapshots {
         if let Some(t) = timeline.project(s.src_time) {
-            ticks.insert(q(t));
+            raw.push(t);
         }
     }
     // Seam states: the frame right at each segment boundary.
     for seg in timeline.segments() {
-        ticks.insert(q(seg.out_start()));
+        raw.push(seg.out_start());
     }
-    // Fast regions: a 5x segment turns sparse source changes into >fps
-    // output changes; the projection above already handles that. But a Play
-    // segment with rate > 1 whose source has *many* snapshots can exceed the
-    // cap — the quantization to the fps grid merges those.
 
     // Camera ramps need continuous ticks.
     for z in &zooms {
         if let Some((a, b)) = z.range {
             let mut t = a;
             while t <= a + z.ramp + 1e-9 {
-                ticks.insert(q(t));
+                raw.push(t);
                 t += step;
             }
             let mut t = (b - z.ramp).max(a);
             while t <= b + 1e-9 {
-                ticks.insert(q(t));
+                raw.push(t);
                 t += step;
             }
             // Land exactly on the ramp ends so full zoom is reached on time.
-            ticks.insert(q(a + z.ramp));
-            ticks.insert(q(b - z.ramp));
+            raw.push(a + z.ramp);
+            raw.push(b - z.ramp);
             for p in &z.pans {
                 let mut t = p.range.0;
                 while t <= p.range.1 + 1e-9 {
-                    ticks.insert(q(t));
+                    raw.push(t);
                     t += step;
                 }
             }
         }
     }
     for c in &captions {
-        ticks.insert(q(c.start));
-        ticks.insert(q(c.end));
+        raw.push(c.start);
+        raw.push(c.end);
     }
     for hl in &highlights {
-        ticks.insert(q(hl.start));
-        ticks.insert(q(hl.end));
+        raw.push(hl.start);
+        raw.push(hl.end);
     }
 
-    // --- Build frames -----------------------------------------------------
-    let times: Vec<f64> = ticks.iter().map(|&k| k as f64 / fps).collect();
+    for t in &mut raw {
+        *t = t.clamp(0.0, out_dur);
+    }
+    raw.sort_by(|a, b| a.total_cmp(b));
+
+    // Coalesce: one frame per 1/fps window, keeping the window's *last*
+    // event time so the frame's sample includes every change in the burst.
+    let mut times: Vec<f64> = vec![0.0];
+    let mut last_window = -1i64;
+    for &t in &raw {
+        if t <= 1e-9 {
+            continue;
+        }
+        let w = (t / step).floor() as i64;
+        if w == last_window {
+            *times.last_mut().unwrap() = t;
+        } else {
+            times.push(t);
+            last_window = w;
+        }
+    }
     let mut frames = Vec::with_capacity(times.len());
     for (i, &t) in times.iter().enumerate() {
         let next = times.get(i + 1).copied().unwrap_or(out_dur);
@@ -211,6 +246,7 @@ pub fn plan(
             camera,
             captions: caps,
             highlights: hls,
+            cursor_on: true,
         });
     }
 
@@ -236,7 +272,41 @@ pub fn plan(
         }
         merged.push(f);
     }
+
+    if cursor_blink {
+        merged = blink(merged, snapshots);
+    }
     merged
+}
+
+/// Splits frames longer than a blink period into on/off phases when the
+/// snapshot's cursor is visible.
+fn blink(frames: Vec<FramePlan>, snapshots: &[Snapshot]) -> Vec<FramePlan> {
+    let mut out = Vec::with_capacity(frames.len());
+    for f in frames {
+        let visible = snapshots
+            .get(f.snapshot)
+            .map(|s| s.cursor.shape != reel_term::CursorShape::Hidden)
+            .unwrap_or(false);
+        if !visible || f.dur < BLINK_HALF * 1.6 {
+            out.push(f);
+            continue;
+        }
+        let mut t = f.out_t;
+        let end = f.out_t + f.dur;
+        let mut on = true;
+        while t < end - 1e-9 {
+            let dur = BLINK_HALF.min(end - t);
+            let mut phase = f.clone();
+            phase.out_t = t;
+            phase.dur = dur;
+            phase.cursor_on = on;
+            out.push(phase);
+            t += dur;
+            on = !on;
+        }
+    }
+    out
 }
 
 /// Index of the last snapshot at or before `src_t`.
@@ -309,8 +379,30 @@ mod tests {
                 cells: vec![Default::default(); 2],
                 cursor: reel_term::Cursor { col: 0, row: 0, shape: reel_term::CursorShape::Block },
                 palette_overrides: vec![],
+            images: vec![],
             })
             .collect()
+    }
+
+    #[test]
+    fn blink_splits_long_stills_only() {
+        let (tl, _) = Timeline::compile(&EditOps::default(), 10.0).unwrap();
+        let snaps = snapshots(&[0.0, 1.0, 1.2]); // long still after 1.2s
+        let frames = plan_with(&tl, &snaps, &[], 30, true);
+        let phases: Vec<&FramePlan> = frames.iter().filter(|f| f.out_t >= 1.2).collect();
+        assert!(phases.len() > 10, "long still should blink, got {}", phases.len());
+        assert!(phases.iter().any(|f| !f.cursor_on));
+        assert!(phases.iter().any(|f| f.cursor_on));
+        // Short frames stay whole (the 0.2s frame between the changes).
+        let short: Vec<&FramePlan> = frames
+            .iter()
+            .filter(|f| f.out_t >= 1.0 - 1e-9 && f.out_t < 1.19)
+            .collect();
+        assert_eq!(short.len(), 1);
+        assert!(short[0].cursor_on);
+        // Durations still tile the timeline.
+        let total: f64 = frames.iter().map(|f| f.dur).sum();
+        assert!((total - 10.0).abs() < 0.05, "total {total}");
     }
 
     #[test]
@@ -363,6 +455,37 @@ mod tests {
         let with = frames.iter().find(|f| !f.captions.is_empty()).unwrap();
         assert!((with.out_t - 2.0).abs() < 0.05);
         assert!((with.dur - 3.0).abs() < 0.1, "caption frame lasts its duration");
+    }
+
+    #[test]
+    fn spinner_cadence_stays_even_no_grid_aliasing() {
+        // A 25Hz spinner (40ms) planned at 30fps used to alias into a
+        // 33/67ms judder; exact timestamps must keep the spacing uniform.
+        let (tl, _) = Timeline::compile(&EditOps::default(), 4.0).unwrap();
+        let times: Vec<f64> = (0..75).map(|i| 0.2 + i as f64 * 0.04).collect();
+        let snaps = snapshots(&times);
+        let frames = plan(&tl, &snaps, &[], 60);
+        let spin: Vec<&FramePlan> = frames
+            .iter()
+            .filter(|f| f.out_t > 0.21 && f.out_t < 3.1)
+            .collect();
+        for w in spin.windows(2) {
+            let gap = w[1].out_t - w[0].out_t;
+            assert!((gap - 0.04).abs() < 1e-6, "gap {gap} aliased");
+        }
+    }
+
+    #[test]
+    fn key_times_survive_exactly() {
+        let (tl, _) = Timeline::compile(&EditOps::default(), 5.0).unwrap();
+        let snaps = snapshots(&[0.0, 1.16, 1.27, 1.51, 1.64, 1.85]);
+        let frames = plan(&tl, &snaps, &[], 60);
+        for t in [1.16, 1.27, 1.51, 1.64, 1.85] {
+            assert!(
+                frames.iter().any(|f| (f.out_t - t).abs() < 1e-9),
+                "exact time {t} missing"
+            );
+        }
     }
 
     #[test]

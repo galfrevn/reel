@@ -9,7 +9,7 @@ pub mod raster;
 pub mod template;
 pub mod theme;
 
-pub use plan::{plan, Camera, FramePlan};
+pub use plan::{plan, plan_with, Camera, FramePlan};
 pub use template::{Template, WindowStyle};
 pub use theme::{Rgba, Theme};
 pub use tiny_skia::Pixmap;
@@ -32,6 +32,8 @@ pub enum RenderError {
     Font(String),
     #[error("invalid aspect `{0}` (try 16:9, 4:3, or 1.78)")]
     BadAspect(String),
+    #[error("invalid size `{0}` (try 1920x1080)")]
+    BadSize(String),
 }
 
 #[derive(Debug, Clone)]
@@ -41,8 +43,10 @@ pub struct RenderSettings {
     /// Supersampling factor: output pixels per logical pixel.
     pub scale: f32,
     pub fps: u32,
-    /// Minimum canvas width/height ratio; the canvas pads out to reach it.
-    pub aspect: Option<f32>,
+    /// Aspect/exact-size canvas padding.
+    pub fit: chrome::CanvasFit,
+    /// Blink the cursor during long stills.
+    pub cursor_blink: bool,
 }
 
 /// Layering per the spec: built-in defaults → template → `[style]` overrides.
@@ -89,13 +93,20 @@ pub fn settings_from_config(cfg: &ReelConfig) -> Result<(RenderSettings, Vec<Str
         ),
         None => None,
     };
+    let exact = match &cfg.output.size {
+        Some(v) => Some(
+            reel_format::parse_size(v).ok_or_else(|| RenderError::BadSize(v.clone()))?,
+        ),
+        None => None,
+    };
     Ok((
         RenderSettings {
             template: tpl,
             theme,
             scale: cfg.output.scale.clamp(1, 4) as f32,
-            fps: cfg.output.fps.clamp(1, 60),
-            aspect,
+            fps: cfg.output.fps.unwrap_or(30).clamp(1, 120),
+            fit: chrome::CanvasFit { aspect, exact },
+            cursor_blink: cfg.style.cursor_blink.unwrap_or(true),
         },
         warnings,
     ))
@@ -106,6 +117,12 @@ pub struct Renderer {
     raster: Rasterizer,
     /// Cached static chrome (canvas bg + shadow + window) keyed by term size.
     chrome_base: Option<((u32, u32), Pixmap)>,
+    // Reused per-frame buffers: allocating ~25MB per frame made macOS's
+    // large-alloc cache balloon multi-gigabyte on long renders.
+    term_scratch: Pixmap,
+    zoom_scratch: Pixmap,
+    canvas_scratch: Pixmap,
+    rgba_scratch: Vec<u8>,
 }
 
 impl Renderer {
@@ -115,8 +132,17 @@ impl Renderer {
     pub fn new(settings: RenderSettings) -> Result<(Self, Vec<String>), RenderError> {
         let (raster, warning) = Rasterizer::new(settings.template.font.as_deref())
             .map_err(RenderError::Font)?;
+        let px = || Pixmap::new(1, 1).expect("pixmap");
         Ok((
-            Renderer { settings, raster, chrome_base: None },
+            Renderer {
+                settings,
+                raster,
+                chrome_base: None,
+                term_scratch: px(),
+                zoom_scratch: px(),
+                canvas_scratch: px(),
+                rgba_scratch: Vec::new(),
+            },
             warning.into_iter().collect(),
         ))
     }
@@ -132,6 +158,28 @@ impl Renderer {
         self.settings = settings;
         self.chrome_base = None;
         Ok(warning.into_iter().collect())
+    }
+
+    /// When an exact canvas size is requested, solve the font size so the
+    /// grid fills it as closely as possible without overflowing — no more
+    /// hand-tuning font_size to land on 1920x1080.
+    pub fn fit_exact(&mut self, cols: u16, rows: u16) {
+        let Some((tw, th)) = self.settings.fit.exact else { return };
+        let s = self.settings.scale;
+        // Chrome overhead at zero terminal size.
+        let l0 = chrome::layout(&self.settings.template, 0, 0, s, chrome::CanvasFit::default());
+        let (ow, oh) = (l0.canvas_w as f32, l0.canvas_h as f32);
+        // Cell metrics scale linearly with font size; measure at 100px.
+        let m = self.raster.fonts.cell_metrics(100.0, self.settings.template.line_height);
+        let (kw, kh) = (m.cell_w / 100.0, m.cell_h / 100.0);
+        let fs_w = (tw as f32 - ow) / (cols as f32 * kw * s);
+        let fs_h = (th as f32 - oh) / (rows as f32 * kh * s);
+        // Tiny margin absorbs per-cell rounding so we never overflow.
+        let fs = fs_w.min(fs_h) * 0.995;
+        if fs.is_finite() && fs >= 4.0 {
+            self.settings.template.font_size = fs;
+            self.chrome_base = None;
+        }
     }
 
     fn base_font_px(&self) -> f32 {
@@ -153,12 +201,25 @@ impl Renderer {
     /// Full output frame size (canvas including chrome).
     pub fn canvas_size(&mut self, cols: u16, rows: u16) -> (u32, u32) {
         let (tw, th) = self.term_size(cols, rows);
-        let l = chrome::layout(&self.settings.template, tw, th, self.settings.scale, self.settings.aspect);
+        let l = chrome::layout(&self.settings.template, tw, th, self.settings.scale, self.settings.fit);
         (l.canvas_w, l.canvas_h)
     }
 
     /// Renders one planned frame to a composited canvas.
     pub fn render_frame(&mut self, snap: &Snapshot, frame: &FramePlan) -> Pixmap {
+        self.render_to_scratch(snap, frame);
+        self.canvas_scratch.clone()
+    }
+
+    /// Renders one planned frame and returns straight RGBA bytes from an
+    /// internal reused buffer — the zero-churn path encoders should use.
+    pub fn render_frame_rgba(&mut self, snap: &Snapshot, frame: &FramePlan) -> (u32, u32, &[u8]) {
+        self.render_to_scratch(snap, frame);
+        pixmap_to_rgba_into(&self.canvas_scratch, &mut self.rgba_scratch);
+        (self.canvas_scratch.width(), self.canvas_scratch.height(), &self.rgba_scratch)
+    }
+
+    fn render_to_scratch(&mut self, snap: &Snapshot, frame: &FramePlan) {
         let s = self.settings.scale;
         let tpl = self.settings.template.clone();
         let theme = self.settings.theme.clone();
@@ -169,16 +230,18 @@ impl Renderer {
 
         let z = frame.camera.zoom.max(1.0);
         // (viewport origin in zoomed px, current cell size) for overlay math.
-        let (mut term, view_off, cur_cell) = if z > 1.0001 {
+        let (view_off, cur_cell) = if z > 1.0001 {
             // Re-rasterize at the zoomed size so text stays sharp — never
             // upscale pixels.
             let zoom_px = base_px * z as f32;
             let zm = self.raster.fonts.cell_metrics(zoom_px, tpl.line_height);
-            let big = raster::raster_grid(
+            raster::raster_grid_into(
                 &mut self.raster,
                 snap,
-                &GridStyle { theme: &theme, font_size: zoom_px, line_height: tpl.line_height },
+                &GridStyle { theme: &theme, font_size: zoom_px, line_height: tpl.line_height, cursor_visible: frame.cursor_on },
+                &mut self.zoom_scratch,
             );
+            let big = &self.zoom_scratch;
             let cx = (frame.camera.center.0 as f32 + 0.5) * zm.cell_w;
             let cy = (frame.camera.center.1 as f32 + 0.5) * zm.cell_h;
             let vx = (cx - term_w as f32 / 2.0)
@@ -187,15 +250,18 @@ impl Renderer {
             let vy = (cy - term_h as f32 / 2.0)
                 .clamp(0.0, (big.height() as f32 - term_h as f32).max(0.0))
                 .round() as i32;
-            (crop(&big, vx, vy, term_w, term_h), (vx, vy), (zm.cell_w, zm.cell_h))
+            crop_into(big, vx, vy, term_w, term_h, &mut self.term_scratch);
+            ((vx, vy), (zm.cell_w, zm.cell_h))
         } else {
-            let pix = raster::raster_grid(
+            raster::raster_grid_into(
                 &mut self.raster,
                 snap,
-                &GridStyle { theme: &theme, font_size: base_px, line_height: tpl.line_height },
+                &GridStyle { theme: &theme, font_size: base_px, line_height: tpl.line_height, cursor_visible: frame.cursor_on },
+                &mut self.term_scratch,
             );
-            (pix, (0, 0), (base_m.cell_w, base_m.cell_h))
+            ((0, 0), (base_m.cell_w, base_m.cell_h))
         };
+        let term = &mut self.term_scratch;
 
         for &(c, r, w, h) in &frame.highlights {
             let rect = (
@@ -204,30 +270,50 @@ impl Renderer {
                 (w as f32 * cur_cell.0).ceil() as i32,
                 (h as f32 * cur_cell.1).ceil() as i32,
             );
-            chrome::dim_except(&mut term, rect, 0.55);
+            chrome::dim_except(term, rect, 0.55);
         }
 
         if let Some(crt) = &tpl.crt {
-            fx::apply_crt(&mut term, crt, s);
+            fx::apply_crt(term, crt, s);
         }
 
         let key = (term.width(), term.height());
         if self.chrome_base.as_ref().map(|(k, _)| *k) != Some(key) {
-            let base = chrome::compose_base(&tpl, &theme, term.width(), term.height(), s, self.settings.aspect);
+            let base = chrome::compose_base(&tpl, &theme, term.width(), term.height(), s, self.settings.fit);
             self.chrome_base = Some((key, base));
         }
         let base = &self.chrome_base.as_ref().unwrap().1;
-        let mut canvas = chrome::compose_over(base, &tpl, &term, s, self.settings.aspect);
+        chrome::compose_over_into(
+            base,
+            &tpl,
+            &self.term_scratch,
+            s,
+            self.settings.fit,
+            &mut self.canvas_scratch,
+        );
 
         for cap in &frame.captions {
-            self.draw_caption(&mut canvas, &cap.text, cap.pos, s);
+            Self::draw_caption(
+                &mut self.raster,
+                self.settings.template.font_size,
+                &mut self.canvas_scratch,
+                &cap.text,
+                cap.pos,
+                s,
+            );
         }
-        canvas
     }
 
-    fn draw_caption(&mut self, canvas: &mut Pixmap, text: &str, pos: CaptionPos, s: f32) {
-        let size = (self.settings.template.font_size * 0.95 * s).max(10.0);
-        let m = self.raster.fonts.cell_metrics(size, 1.0);
+    fn draw_caption(
+        raster: &mut Rasterizer,
+        template_font_size: f32,
+        canvas: &mut Pixmap,
+        text: &str,
+        pos: CaptionPos,
+        s: f32,
+    ) {
+        let size = (template_font_size * 0.95 * s).max(10.0);
+        let m = raster.fonts.cell_metrics(size, 1.0);
         let text_w: f32 = text.chars().count() as f32 * m.cell_w;
         let pad_x = 14.0 * s;
         let pad_y = 8.0 * s;
@@ -255,7 +341,7 @@ impl Renderer {
         let mut pen_x = x + pad_x;
         let baseline_y = y + pad_y + m.baseline;
         for chr in text.chars() {
-            if let Some(g) = self.raster.glyph(chr, Variant::Bold, size) {
+            if let Some(g) = raster.glyph(chr, Variant::Bold, size) {
                 let gx = pen_x.round() as i32 + g.left;
                 let gy = baseline_y.round() as i32 - g.top;
                 match &g.pixels {
@@ -274,16 +360,28 @@ impl Renderer {
 
 /// Premultiplied pixmap → straight RGBA bytes (what encoders expect).
 pub fn pixmap_to_rgba(pix: &Pixmap) -> Vec<u8> {
-    let mut out = Vec::with_capacity(pix.pixels().len() * 4);
+    let mut out = Vec::new();
+    pixmap_to_rgba_into(pix, &mut out);
+    out
+}
+
+/// Buffer-reusing variant of [`pixmap_to_rgba`].
+pub fn pixmap_to_rgba_into(pix: &Pixmap, out: &mut Vec<u8>) {
+    out.clear();
+    out.reserve(pix.pixels().len() * 4);
     for p in pix.pixels() {
         let c = p.demultiply();
         out.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
     }
-    out
 }
 
-fn crop(src: &Pixmap, x: i32, y: i32, w: u32, h: u32) -> Pixmap {
-    let mut out = Pixmap::new(w.max(1), h.max(1)).expect("crop pixmap");
+fn crop_into(src: &Pixmap, x: i32, y: i32, w: u32, h: u32, out: &mut Pixmap) {
+    let (w, h) = (w.max(1), h.max(1));
+    if out.width() != w || out.height() != h {
+        *out = Pixmap::new(w, h).expect("crop pixmap");
+    } else {
+        out.data_mut().fill(0);
+    }
     let sw = src.width() as i32;
     let sh = src.height() as i32;
     let src_px = src.pixels();
@@ -302,7 +400,6 @@ fn crop(src: &Pixmap, x: i32, y: i32, w: u32, h: u32) -> Pixmap {
             dst[row as usize * out_w + col as usize] = src_px[sy as usize * sw as usize + sx as usize];
         }
     }
-    out
 }
 
 #[cfg(test)]
@@ -332,6 +429,7 @@ mod tests {
             camera: Camera::BASE,
             captions: vec![],
             highlights: vec![],
+            cursor_on: true,
         }
     }
 
