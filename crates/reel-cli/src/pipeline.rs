@@ -77,6 +77,20 @@ fn load(path: &Path, template_override: Option<String>, quiet: bool) -> Result<L
             eprintln!("warning: {w}");
         }
     }
+    // Redactions run before anything renders, and cover .txt dumps too.
+    for pattern in &program.redactions {
+        let re = regex_lite::Regex::new(pattern)
+            .map_err(|e| anyhow!("redact `{pattern}`: {e}"))?;
+        reel_term::redact::apply(&mut snapshots, &re);
+    }
+    if !quiet {
+        for (kind, sample) in reel_term::redact::scan_sensitive(&snapshots, 4) {
+            eprintln!(
+                "warning: possible {kind} on screen: \"{sample}\" — mask it with: redact \"…\""
+            );
+        }
+    }
+
     let visuals = program.visuals;
     let audio_ops = program.audio;
     Ok(Loaded { file, cast, snapshots, timeline, visuals, audio_ops, base_dir, cast_path })

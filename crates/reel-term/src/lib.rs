@@ -10,6 +10,7 @@
 //!    are folded into one snapshot, and synchronized-output (`?2026`) blocks
 //!    are atomic because the parser buffers them until ESU.
 
+pub mod redact;
 pub mod typing;
 pub use typing::{smooth_typing, KeyPress};
 
