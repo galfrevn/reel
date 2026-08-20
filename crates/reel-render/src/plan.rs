@@ -379,6 +379,7 @@ mod tests {
                 cells: vec![Default::default(); 2],
                 cursor: reel_term::Cursor { col: 0, row: 0, shape: reel_term::CursorShape::Block },
                 palette_overrides: vec![],
+            images: vec![],
             })
             .collect()
     }

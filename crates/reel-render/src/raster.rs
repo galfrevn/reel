@@ -109,6 +109,33 @@ pub fn raster_grid_into(r: &mut Rasterizer, snap: &Snapshot, style: &GridStyle, 
             let _ = bg;
         }
     }
+
+    composite_images(pix, snap, m.cell_w, m.cell_h);
+}
+
+/// Draws sixel/kitty images over the rendered grid (experimental).
+fn composite_images(pix: &mut Pixmap, snap: &Snapshot, cell_w: f32, cell_h: f32) {
+    use tiny_skia::{FilterQuality, PixmapPaint, Transform};
+    for img in &snap.images {
+        let Some(mut src) = Pixmap::new(img.width, img.height) else { continue };
+        for (i, px) in img.rgba.chunks_exact(4).enumerate() {
+            let a = px[3] as u16;
+            let pm = |v: u8| ((v as u16 * a) / 255) as u8;
+            src.pixels_mut()[i] =
+                PremultipliedColorU8::from_rgba(pm(px[0]), pm(px[1]), pm(px[2]), px[3])
+                    .unwrap_or(PremultipliedColorU8::TRANSPARENT);
+        }
+        let sx = (img.cols as f32 * cell_w) / img.width as f32;
+        let sy = (img.rows as f32 * cell_h) / img.height as f32;
+        pix.draw_pixmap(
+            0,
+            0,
+            src.as_ref(),
+            &PixmapPaint { quality: FilterQuality::Bilinear, ..Default::default() },
+            Transform::from_row(sx, 0.0, 0.0, sy, img.col as f32 * cell_w, img.row as f32 * cell_h),
+            None,
+        );
+    }
 }
 
 fn cell_colors(

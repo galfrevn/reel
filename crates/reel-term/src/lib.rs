@@ -10,6 +10,7 @@
 //!    are folded into one snapshot, and synchronized-output (`?2026`) blocks
 //!    are atomic because the parser buffers them until ESU.
 
+pub mod graphics;
 pub mod redact;
 pub mod typing;
 pub use typing::{smooth_typing, KeyPress};
@@ -109,6 +110,8 @@ pub struct Snapshot {
     pub cursor: Cursor,
     /// Palette slots the application overrode via OSC 4, as (index, rgb).
     pub palette_overrides: Vec<(u8, (u8, u8, u8))>,
+    /// Sixel / kitty-protocol images visible in this frame (experimental).
+    pub images: Vec<graphics::PlacedImage>,
 }
 
 impl Snapshot {
@@ -249,6 +252,8 @@ pub fn replay(cast: &Cast) -> Result<Vec<Snapshot>, TermError> {
 
     let mut snapshots: Vec<Snapshot> = vec![take_snapshot(&term, 0.0)];
     let mut last_hash = snapshots[0].content_hash();
+    let mut gfx = graphics::GraphicsState::default();
+    let mut last_images_len = 0usize;
 
     let outputs: Vec<_> = cast
         .events
@@ -258,7 +263,40 @@ pub fn replay(cast: &Cast) -> Result<Vec<Snapshot>, TermError> {
 
     for (i, ev) in outputs.iter().enumerate() {
         match ev.kind {
-            EventKind::Output => parser.advance(&mut term, ev.data.as_bytes()),
+            EventKind::Output => {
+                for piece in gfx.process(ev.data.as_bytes()) {
+                    match piece {
+                        graphics::Piece::Text(bytes) => {
+                            if graphics::clears_screen(&bytes) {
+                                gfx.images.clear();
+                            }
+                            parser.advance(&mut term, &bytes);
+                        }
+                        graphics::Piece::Image { rgba, width, height, cols: ic, rows: ir } => {
+                            let cur = term.grid().cursor.point;
+                            let cell_cols = ic.unwrap_or_else(|| {
+                                (width as f32 / graphics::SIXEL_CELL.0).ceil() as u16
+                            });
+                            let cell_rows = ir.unwrap_or_else(|| {
+                                (height as f32 / graphics::SIXEL_CELL.1).ceil() as u16
+                            });
+                            let (col, row) = (cur.column.0 as u16, cur.line.0.max(0) as u16);
+                            // Redrawing the same anchor replaces the image.
+                            gfx.images.retain(|im| (im.col, im.row) != (col, row));
+                            gfx.images.push(graphics::PlacedImage {
+                                col,
+                                row,
+                                cols: cell_cols.min(cols),
+                                rows: cell_rows.min(rows),
+                                width,
+                                height,
+                                rgba: std::sync::Arc::new(rgba),
+                            });
+                        }
+                        graphics::Piece::ClearImages => gfx.images.clear(),
+                    }
+                }
+            }
             EventKind::Resize => {
                 if let Some((c, r)) = parse_resize(&ev.data) {
                     term.resize(GridSize { cols: c as usize, rows: r as usize });
@@ -280,10 +318,12 @@ pub fn replay(cast: &Cast) -> Result<Vec<Snapshot>, TermError> {
             continue;
         }
 
-        let snap = take_snapshot(&term, ev.time);
+        let mut snap = take_snapshot(&term, ev.time);
+        snap.images = gfx.images.clone();
         let hash = snap.content_hash();
-        if hash != last_hash {
+        if hash != last_hash || gfx.images.len() != last_images_len {
             last_hash = hash;
+            last_images_len = gfx.images.len();
             snapshots.push(snap);
         }
     }
@@ -341,7 +381,7 @@ fn take_snapshot<L: EventListener>(term: &Term<L>, src_time: f64) -> Snapshot {
         }
     }
 
-    Snapshot { src_time, cols, rows, cells, cursor, palette_overrides }
+    Snapshot { src_time, cols, rows, cells, cursor, palette_overrides, images: Vec::new() }
 }
 
 fn cursor_state<L: EventListener>(term: &Term<L>) -> Cursor {

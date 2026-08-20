@@ -1179,6 +1179,7 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "bitflags 2.13.1",
+ "png",
  "reel-cast",
  "regex-lite",
  "thiserror 2.0.20",
