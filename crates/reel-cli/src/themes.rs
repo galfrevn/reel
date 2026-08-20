@@ -8,6 +8,238 @@ use reel_render::theme::{self, Theme};
 use reel_render::Rgba;
 use std::path::Path;
 
+/// Imports the theme straight from an installed terminal's own settings.
+pub fn import_from_terminal(which: &str, name: Option<String>) -> Result<()> {
+    let home = std::env::var("HOME").map(std::path::PathBuf::from).ok();
+    let (theme, default_name, font_hint) = match which {
+        "iterm" | "iterm2" => {
+            let plist_path = home
+                .as_ref()
+                .map(|h| h.join("Library/Preferences/com.googlecode.iterm2.plist"))
+                .filter(|p| p.exists())
+                .ok_or_else(|| anyhow!("iTerm2 preferences not found (is iTerm2 installed?)"))?;
+            from_iterm_profile(&plist_path)?
+        }
+        "kitty" => {
+            let conf = home
+                .as_ref()
+                .map(|h| h.join(".config/kitty/kitty.conf"))
+                .filter(|p| p.exists())
+                .ok_or_else(|| anyhow!("~/.config/kitty/kitty.conf not found"))?;
+            from_keyvalue_config(&conf, KittyDialect)?
+        }
+        "ghostty" => {
+            let conf = home
+                .as_ref()
+                .and_then(|h| {
+                    [
+                        h.join(".config/ghostty/config"),
+                        h.join("Library/Application Support/com.mitchellh.ghostty/config"),
+                    ]
+                    .into_iter()
+                    .find(|p| p.exists())
+                })
+                .ok_or_else(|| anyhow!("Ghostty config not found"))?;
+            from_keyvalue_config(&conf, GhosttyDialect)?
+        }
+        other => bail!("unknown terminal `{other}` (supported: iterm, kitty, ghostty)"),
+    };
+    let mut theme = theme;
+    theme.name = sanitize(&name.unwrap_or(default_name));
+    let installed = install_theme(&theme)?;
+    if let Some((family, size)) = font_hint {
+        println!("your terminal font: [style] font = \"{family}\", font_size = {size}");
+    }
+    println!("use it: [style] theme = \"{installed}\"");
+    Ok(())
+}
+
+fn install_theme(theme: &Theme) -> Result<String> {
+    let dir = reel_render::paths::themes_dir()
+        .ok_or_else(|| anyhow!("cannot determine the reel config directory"))?;
+    std::fs::create_dir_all(&dir)?;
+    let dest = dir.join(format!("{}.toml", theme.name));
+    std::fs::write(&dest, theme::to_toml(theme))?;
+    println!("imported `{}` → {}", theme.name, dest.display());
+    Ok(theme.name.clone())
+}
+
+/// The *active* iTerm2 profile from its preferences plist.
+fn from_iterm_profile(path: &Path) -> Result<(Theme, String, Option<(String, f32)>)> {
+    let value = plist::Value::from_file(path)
+        .with_context(|| format!("parsing {}", path.display()))?;
+    let root = value
+        .as_dictionary()
+        .ok_or_else(|| anyhow!("iTerm2 plist root is not a dictionary"))?;
+    let bookmarks = root
+        .get("New Bookmarks")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow!("no profiles in the iTerm2 plist"))?;
+    let default_guid = root.get("Default Bookmark Guid").and_then(|v| v.as_string());
+    let profile = bookmarks
+        .iter()
+        .filter_map(|b| b.as_dictionary())
+        .find(|b| {
+            default_guid.is_some()
+                && b.get("Guid").and_then(|g| g.as_string()) == default_guid
+        })
+        .or_else(|| bookmarks.first().and_then(|b| b.as_dictionary()))
+        .ok_or_else(|| anyhow!("no usable iTerm2 profile found"))?;
+
+    let color = |key: &str| -> Result<Rgba> {
+        let d = profile
+            .get(key)
+            .and_then(|v| v.as_dictionary())
+            .ok_or_else(|| anyhow!("profile missing `{key}`"))?;
+        let comp = |k: &str| -> Result<u8> {
+            let v = d
+                .get(k)
+                .and_then(|v| v.as_real().or_else(|| v.as_signed_integer().map(|i| i as f64)))
+                .ok_or_else(|| anyhow!("`{key}` missing `{k}`"))?;
+            Ok((v.clamp(0.0, 1.0) * 255.0).round() as u8)
+        };
+        Ok(Rgba::rgb(comp("Red Component")?, comp("Green Component")?, comp("Blue Component")?))
+    };
+    let fg = color("Foreground Color")?;
+    let mut ansi = [Rgba::rgb(0, 0, 0); 16];
+    for (i, slot) in ansi.iter_mut().enumerate() {
+        *slot = color(&format!("Ansi {i} Color"))?;
+    }
+    let name = profile
+        .get("Name")
+        .and_then(|v| v.as_string())
+        .unwrap_or("iterm")
+        .to_string();
+    // "GeistMono-Regular 14" → family + size hint for [style].
+    let font_hint = profile
+        .get("Normal Font")
+        .and_then(|v| v.as_string())
+        .and_then(|f| {
+            let (family, size) = f.rsplit_once(' ')?;
+            Some((family.replace('-', " "), size.parse::<f32>().ok()?))
+        });
+    Ok((
+        Theme {
+            name: format!("iterm-{name}"),
+            fg,
+            bg: color("Background Color")?,
+            cursor: color("Cursor Color").unwrap_or(fg),
+            ansi,
+        },
+        format!("iterm-{name}"),
+        font_hint,
+    ))
+}
+
+/// kitty.conf / Ghostty config are both simple key-value lines.
+struct KittyDialect;
+struct GhosttyDialect;
+
+trait TermDialect {
+    /// Returns (ansi_index, color) / named slot for one config line.
+    fn parse(&self, key: &str, val: &str) -> Option<(Slot, String)>;
+    fn name(&self) -> &'static str;
+}
+
+enum Slot {
+    Ansi(usize),
+    Fg,
+    Bg,
+    Cursor,
+    FontFamily,
+    FontSize,
+}
+
+impl TermDialect for KittyDialect {
+    fn parse(&self, key: &str, val: &str) -> Option<(Slot, String)> {
+        let slot = match key {
+            k if k.starts_with("color") => Slot::Ansi(k[5..].parse().ok()?),
+            "foreground" => Slot::Fg,
+            "background" => Slot::Bg,
+            "cursor" => Slot::Cursor,
+            "font_family" => Slot::FontFamily,
+            "font_size" => Slot::FontSize,
+            _ => return None,
+        };
+        Some((slot, val.to_string()))
+    }
+    fn name(&self) -> &'static str {
+        "kitty"
+    }
+}
+
+impl TermDialect for GhosttyDialect {
+    fn parse(&self, key: &str, val: &str) -> Option<(Slot, String)> {
+        let slot = match key {
+            "palette" => {
+                let (idx, color) = val.split_once('=')?;
+                return Some((Slot::Ansi(idx.trim().parse().ok()?), color.trim().to_string()));
+            }
+            "foreground" => Slot::Fg,
+            "background" => Slot::Bg,
+            "cursor-color" => Slot::Cursor,
+            "font-family" => Slot::FontFamily,
+            "font-size" => Slot::FontSize,
+            _ => return None,
+        };
+        Some((slot, val.to_string()))
+    }
+    fn name(&self) -> &'static str {
+        "ghostty"
+    }
+}
+
+fn from_keyvalue_config(
+    path: &Path,
+    dialect: impl TermDialect,
+) -> Result<(Theme, String, Option<(String, f32)>)> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let mut ansi: [Option<Rgba>; 16] = [None; 16];
+    let (mut fg, mut bg, mut cursor) = (None, None, None);
+    let (mut family, mut size) = (None, None);
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, val) = match line.split_once(['=', ' ', '\t']) {
+            Some((k, v)) => (k.trim(), v.trim().trim_start_matches('=').trim()),
+            None => continue,
+        };
+        let Some((slot, val)) = dialect.parse(key, val) else { continue };
+        match slot {
+            Slot::Ansi(i) if i < 16 => {
+                if let Ok(c) = hex(&val) {
+                    ansi[i] = Some(c);
+                }
+            }
+            Slot::Ansi(_) => {}
+            Slot::Fg => fg = hex(&val).ok(),
+            Slot::Bg => bg = hex(&val).ok(),
+            Slot::Cursor => cursor = hex(&val).ok(),
+            Slot::FontFamily => family = Some(val.trim_matches('"').to_string()),
+            Slot::FontSize => size = val.parse::<f32>().ok(),
+        }
+    }
+    let fg = fg.ok_or_else(|| anyhow!("no foreground color in {}", path.display()))?;
+    let bg = bg.ok_or_else(|| anyhow!("no background color in {}", path.display()))?;
+    // Missing palette slots fall back to reel's defaults for that half.
+    let defaults = theme::builtin("reel-dark").unwrap();
+    let mut palette = defaults.ansi;
+    for (i, c) in ansi.iter().enumerate() {
+        if let Some(c) = c {
+            palette[i] = *c;
+        }
+    }
+    let name = dialect.name().to_string();
+    Ok((
+        Theme { name: name.clone(), fg, bg, cursor: cursor.unwrap_or(fg), ansi: palette },
+        name,
+        family.map(|f| (f, size.unwrap_or(14.0))),
+    ))
+}
+
 pub fn import(path: &Path, name: Option<String>) -> Result<()> {
     let stem = path
         .file_stem()
@@ -383,6 +615,33 @@ colors:
         let t = from_alacritty_yaml(text, "mini").unwrap();
         assert_eq!(t.ansi[1], t.ansi[9]);
         assert_eq!(t.cursor, t.fg, "cursor falls back to fg");
+    }
+
+    #[test]
+    fn ghostty_keyvalue_config_parses() {
+        let dir = std::env::temp_dir().join("reel-ghostty-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("config");
+        std::fs::write(&p, "\n# comment\nfont-family = Geist Mono\nfont-size = 13\nbackground = #101014\nforeground = #e6e6eb\ncursor-color = #8ab4f8\npalette = 0=#1c1c22\npalette = 1=#f28b82\npalette = 9=#f6aea9\n").unwrap();
+        let (theme, name, font) = from_keyvalue_config(&p, GhosttyDialect).unwrap();
+        assert_eq!(name, "ghostty");
+        assert_eq!(theme.bg, Rgba::from_hex("#101014").unwrap());
+        assert_eq!(theme.ansi[1], Rgba::from_hex("#f28b82").unwrap());
+        assert_eq!(theme.ansi[9], Rgba::from_hex("#f6aea9").unwrap());
+        let (family, size) = font.unwrap();
+        assert_eq!(family, "Geist Mono");
+        assert_eq!(size, 13.0);
+    }
+
+    #[test]
+    fn kitty_keyvalue_config_parses() {
+        let dir = std::env::temp_dir().join("reel-kitty-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("kitty.conf");
+        std::fs::write(&p, "font_family MesloLGS NF\nforeground #dddddd\nbackground #000000\ncolor4 #7aa2f7\n").unwrap();
+        let (theme, _, font) = from_keyvalue_config(&p, KittyDialect).unwrap();
+        assert_eq!(theme.ansi[4], Rgba::from_hex("#7aa2f7").unwrap());
+        assert_eq!(font.unwrap().0, "MesloLGS NF");
     }
 
     #[test]

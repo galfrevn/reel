@@ -127,7 +127,11 @@ enum ThemeAction {
     List,
     /// Import a theme file (base16 .yaml, alacritty .toml/.yml, iTerm2 .itermcolors)
     Import {
-        file: PathBuf,
+        /// Theme file to import; omit when using --from
+        file: Option<PathBuf>,
+        /// Import straight from an installed terminal: iterm, kitty, ghostty
+        #[arg(long, value_name = "TERMINAL", conflicts_with = "file")]
+        from: Option<String>,
         /// Name to install it under (defaults to the scheme/file name)
         #[arg(long)]
         name: Option<String>,
@@ -170,9 +174,11 @@ fn run() -> Result<()> {
             list_themes();
             Ok(())
         }
-        Command::Theme { action: ThemeAction::Import { file, name } } => {
-            themes::import(&file, name)
-        }
+        Command::Theme { action: ThemeAction::Import { file, from, name } } => match (file, from) {
+            (Some(f), None) => themes::import(&f, name),
+            (None, Some(t)) => themes::import_from_terminal(&t, name),
+            _ => bail!("pass a theme file or --from iterm|kitty|ghostty"),
+        },
     }
 }
 
