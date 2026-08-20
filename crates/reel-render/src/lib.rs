@@ -365,6 +365,19 @@ impl Renderer {
                 s,
             );
         }
+
+        if !frame.keys.is_empty() {
+            let over_caption =
+                frame.captions.iter().any(|c| c.pos == CaptionPos::Bottom);
+            Self::draw_keys(
+                &mut self.raster,
+                self.settings.template.font_size,
+                &mut self.canvas_scratch,
+                &frame.keys,
+                over_caption,
+                s,
+            );
+        }
     }
 
     /// Static decorations drawn once onto the cached chrome: titlebar text
@@ -502,6 +515,70 @@ impl Renderer {
             pen_x += m.cell_w;
         }
     }
+
+    /// Keystroke chips, bottom-centered — one small pill per key, oldest on
+    /// the left. When a bottom caption is showing, the row lifts above it.
+    fn draw_keys(
+        raster: &mut Rasterizer,
+        template_font_size: f32,
+        canvas: &mut Pixmap,
+        keys: &[String],
+        over_caption: bool,
+        s: f32,
+    ) {
+        let size = (template_font_size * 0.85 * s).max(9.0);
+        let m = raster.fonts.cell_metrics(size, 1.0);
+        let pad_x = 8.0 * s;
+        let pad_y = 5.0 * s;
+        let gap = 6.0 * s;
+        let chip_h = m.cell_h + pad_y * 2.0;
+        let widths: Vec<f32> = keys
+            .iter()
+            .map(|k| k.chars().count() as f32 * m.cell_w + pad_x * 2.0)
+            .collect();
+        let total_w: f32 = widths.iter().sum::<f32>() + gap * (keys.len() - 1) as f32;
+        let cw = canvas.width() as f32;
+        let ch = canvas.height() as f32;
+        let margin = 18.0 * s;
+        // A bottom caption's pill height (same math as draw_caption).
+        let lift = if over_caption {
+            let cm = raster.fonts.cell_metrics((template_font_size * 0.95 * s).max(10.0), 1.0);
+            cm.cell_h + 16.0 * s + 10.0 * s
+        } else {
+            0.0
+        };
+        let y = ch - chip_h - margin - lift;
+        let mut x = (cw - total_w) / 2.0;
+        let text_color = Rgba::rgb(0xf2, 0xf2, 0xf5);
+        for (key, w) in keys.iter().zip(&widths) {
+            raster::fill_rect(
+                canvas,
+                x as i32,
+                y as i32,
+                w.ceil() as i32,
+                chip_h.ceil() as i32,
+                Rgba { r: 8, g: 8, b: 10, a: 190 },
+            );
+            let mut pen_x = x + pad_x;
+            let baseline_y = y + pad_y + m.baseline;
+            for chr in key.chars() {
+                if let Some(g) = raster.glyph(chr, Variant::Bold, size) {
+                    let gx = pen_x.round() as i32 + g.left;
+                    let gy = baseline_y.round() as i32 - g.top;
+                    match &g.pixels {
+                        GlyphPixels::Mask(mask) => {
+                            raster::blit_mask(canvas, gx, gy, g.width, g.height, mask, text_color)
+                        }
+                        GlyphPixels::Color(rgba) => {
+                            raster::blit_rgba(canvas, gx, gy, g.width, g.height, rgba)
+                        }
+                    }
+                }
+                pen_x += m.cell_w;
+            }
+            x += w + gap;
+        }
+    }
 }
 
 /// Draws a single line of text at a baseline; returns the advance width.
@@ -613,6 +690,7 @@ mod tests {
             camera: Camera::BASE,
             captions: vec![],
             highlights: vec![],
+            keys: vec![],
             cursor_on: true,
             cursor_pos: None,
             glow: vec![],
@@ -684,6 +762,17 @@ mod tests {
         let still = r.render_frame(&s, &base_frame());
         assert_eq!(animated.width(), still.width());
         assert_ne!(animated.data(), still.data());
+    }
+
+    #[test]
+    fn key_chips_draw() {
+        let mut r = Renderer::new(settings("minimal")).unwrap().0;
+        let s = snap(r#"[0.1, "o", "hi"]"#);
+        let mut f = base_frame();
+        f.keys = vec!["cargo test".into(), "⏎".into()];
+        let with = r.render_frame(&s, &f);
+        let without = r.render_frame(&s, &base_frame());
+        assert_ne!(with.data(), without.data());
     }
 
     #[test]

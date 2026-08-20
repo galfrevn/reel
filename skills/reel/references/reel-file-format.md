@@ -149,7 +149,13 @@ which stores single TOML files.
 ## Time syntax
 
 Anywhere a time or duration appears: `3s`, `1200ms`, `1:24` (mm:ss), `end`,
-`end-2s`. Ranges are written `A..B`, e.g. `2s..end`, `19s..23s`.
+`end-2s`, `@marker`. Ranges are written `A..B`, e.g. `2s..end`, `19s..23s`,
+`@1..@done`.
+
+`@name` references a **marker**: either dropped live during `reel record` by
+pressing `Ctrl+]` (auto-labeled `@1`, `@2`, … in order), or defined in the
+file with `marker "name" at T`. `reel inspect` lists every marker with its
+time. An unknown `@name` fails with the list of known markers.
 
 **All timestamps refer to the source clock** — the recording's own timeline
 before any edits. A `caption ... at 40s` stays attached to the same moment of
@@ -179,7 +185,13 @@ each other; `trim` must lie inside the recording. Errors name the line number.
 | `pan` | `pan to (col,row) from A to B` | Move the zoom viewport while zoomed |
 | `caption` | `caption "text" at T for DUR [pos=bottom\|top\|center]` | Styled text overlay (default `pos=bottom`) |
 | `highlight` | `highlight (col,row,w,h) at T for DUR` | Dim everything except the rect |
-| `marker` | `marker "label" at T` | No-op annotation, shown by `reel inspect` |
+| `marker` | `marker "label" at T` | Name a moment; reference it as `@label` in any time |
+| `keys` | `keys on` or `keys A..B` | Show recorded keystrokes as chips (screenkey-style) |
+
+`keys` reads the `.reelmeta` sidecar (or the cast's "i" events): typed runs
+group into one chip (`cargo test`), special keys get symbols (`⏎` `⇥` `⌫`
+`↑` `^C` …), and each chip lingers ~1.2 s. Chips whose footage is cut or
+trimmed away disappear with it. Terminal query responses are filtered out.
 
 Zoom coordinates are **grid cells** (column, row), not pixels — they survive
 font-size and template changes. Text is re-rasterized at the zoomed size, so
@@ -246,11 +258,12 @@ the payoff, and a resting frame before the loop.
 
 ```sh
 reel record  [-o session.cast] [--size 220x54] -- CMD   # live capture + .reelmeta sidecar
+                                       # Ctrl+] while recording drops a marker (@1, @2, …)
 reel render  FILE [-o OUT] [--template T] [--budget 800kb] [--scale N]
              [--aspect 16:9] [--size 1920x1080] [--no-audio] [-q]
 reel run     FILE [--no-render] [-q]   # script mode: capture + render in one step
 reel watch   FILE [--serve [PORT]]     # re-render on save; browser preview at 127.0.0.1:4171
-reel shot    FILE --at 12s [-o out.png]  # single frame PNG
+reel shot    FILE --at 12s [-o out.png]  # single frame PNG (--at @marker works too)
 reel inspect FILE                      # duration, ops summary, markers, size estimate
 reel suggest CAST [--write demo.reel]  # draft the edit script from a recording
 reel init [TEMPLATE] [-o demo.reel]    # scaffold a .reel file

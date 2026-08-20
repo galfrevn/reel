@@ -35,6 +35,8 @@ pub struct FramePlan {
     pub captions: Vec<CaptionDraw>,
     /// Highlight rects in cell coords (col, row, w, h).
     pub highlights: Vec<(u16, u16, u16, u16)>,
+    /// Keystroke-overlay chips currently visible, oldest first.
+    pub keys: Vec<String>,
     /// Whether the cursor is drawn (false during a blink's off phase).
     pub cursor_on: bool,
     /// Fractional cell position mid cursor-slide (None = the snapshot's).
@@ -82,7 +84,18 @@ struct HighlightWindow {
     end: f64,
 }
 
+struct KeyWindow {
+    label: String,
+    start: f64,
+    end: f64,
+}
+
 const RAMP_MAX: f64 = 0.45;
+
+/// How long a keystroke chip stays on screen, in output seconds.
+const KEY_HOLD: f64 = 1.2;
+/// Most chips shown at once; older ones drop off first.
+const MAX_KEY_CHIPS: usize = 6;
 
 /// Half-period of the synthetic cursor blink (the classic ~530ms).
 const BLINK_HALF: f64 = 0.53;
@@ -132,6 +145,7 @@ pub fn plan_frames(
     let mut zooms: Vec<ZoomWindow> = Vec::new();
     let mut captions: Vec<CaptionWindow> = Vec::new();
     let mut highlights: Vec<HighlightWindow> = Vec::new();
+    let mut key_windows: Vec<KeyWindow> = Vec::new();
     for v in visuals {
         match v {
             VisualOp::Zoom { factor, center, range } => {
@@ -174,9 +188,21 @@ pub fn plan_frames(
                 let start = timeline.project_snapped(*at);
                 highlights.push(HighlightWindow { rect: *rect, start, end: (start + dur).min(out_dur) });
             }
-            VisualOp::Marker { .. } => {}
+            VisualOp::Key { label, at } => {
+                // A key cut out of the timeline vanishes with its footage
+                // (unlike captions, which snap: they're authored, keys are
+                // recorded).
+                if let Some(start) = timeline.project(*at) {
+                    key_windows.push(KeyWindow {
+                        label: label.clone(),
+                        start,
+                        end: (start + KEY_HOLD).min(out_dur),
+                    });
+                }
+            }
         }
     }
+    key_windows.sort_by(|a, b| a.start.total_cmp(&b.start));
 
     // --- Collect emission times (exact, never snapped to a grid) ---------
     // Snapping change times to an fps grid aliases against sources with
@@ -230,6 +256,10 @@ pub fn plan_frames(
         raw.push(hl.start);
         raw.push(hl.end);
     }
+    for k in &key_windows {
+        raw.push(k.start);
+        raw.push(k.end);
+    }
 
     for t in &mut raw {
         *t = t.clamp(0.0, out_dur);
@@ -272,6 +302,16 @@ pub fn plan_frames(
             .filter(|h| t >= h.start - 1e-9 && t < h.end - 1e-9)
             .map(|h| h.rect)
             .collect();
+        let active_keys: Vec<String> = key_windows
+            .iter()
+            .filter(|k| t >= k.start - 1e-9 && t < k.end - 1e-9)
+            .map(|k| k.label.clone())
+            .collect();
+        let keys = if active_keys.len() > MAX_KEY_CHIPS {
+            active_keys[active_keys.len() - MAX_KEY_CHIPS..].to_vec()
+        } else {
+            active_keys
+        };
         frames.push(FramePlan {
             out_t: t,
             dur: dur.max(1.0 / fps / 2.0),
@@ -279,6 +319,7 @@ pub fn plan_frames(
             camera,
             captions: caps,
             highlights: hls,
+            keys,
             cursor_on: true,
             cursor_pos: None,
             glow: Vec::new(),
@@ -294,6 +335,7 @@ pub fn plan_frames(
             let same = last.snapshot == f.snapshot
                 && last.camera == f.camera
                 && last.highlights == f.highlights
+                && last.keys == f.keys
                 && last.captions.len() == f.captions.len()
                 && last
                     .captions
@@ -658,6 +700,36 @@ mod tests {
             .filter(|f| f.out_t > 4.0 && f.out_t < 4.45 && f.camera.zoom > 1.0 && f.camera.zoom < 2.0)
             .count();
         assert!(ramping >= 2, "expected easing ticks, got {ramping}");
+    }
+
+    #[test]
+    fn key_chips_appear_and_expire() {
+        let (tl, _) = Timeline::compile(&EditOps::default(), 10.0).unwrap();
+        let snaps = snapshots(&[0.0]);
+        let visuals = vec![
+            VisualOp::Key { label: "ls".into(), at: 2.0 },
+            VisualOp::Key { label: "⏎".into(), at: 2.3 },
+        ];
+        let frames = plan(&tl, &snaps, &visuals, 30);
+        let both = frames
+            .iter()
+            .find(|f| f.keys.len() == 2)
+            .expect("frame with both chips");
+        assert_eq!(both.keys, vec!["ls", "⏎"]);
+        // After the hold window both chips are gone (the post-expiry frame
+        // merges with the tail still).
+        let late = frames.last().unwrap();
+        assert!(late.out_t >= 3.4 && late.keys.is_empty(), "{late:?}");
+    }
+
+    #[test]
+    fn cut_keys_vanish_instead_of_snapping() {
+        let ops = EditOps { cuts: vec![(1.0, 3.0)], ..Default::default() };
+        let (tl, _) = Timeline::compile(&ops, 10.0).unwrap();
+        let snaps = snapshots(&[0.0]);
+        let visuals = vec![VisualOp::Key { label: "^C".into(), at: 2.0 }];
+        let frames = plan(&tl, &snaps, &visuals, 30);
+        assert!(frames.iter().all(|f| f.keys.is_empty()), "cut key survived");
     }
 
     #[test]
