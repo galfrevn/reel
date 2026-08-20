@@ -3,6 +3,7 @@
 //! with the registry (Phase 3).
 
 use crate::font::Family;
+use crate::fx::{CrtEffect, CRT_DEFAULT};
 use crate::theme::Rgba;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +64,8 @@ pub struct Template {
     pub shadow: Option<Shadow>,
     /// 1px-ish border color (alpha carries the subtlety).
     pub border: Option<Rgba>,
+    /// Post-effects applied to the terminal image (scanlines, glow…).
+    pub crt: Option<CrtEffect>,
 }
 
 fn hex(s: &str) -> Rgba {
@@ -87,6 +90,7 @@ pub fn builtin(name: &str) -> Option<Template> {
             canvas: CanvasBg::Solid(hex("#000000")),
             shadow: None,
             border: Some(hex("#ffffff22")),
+            crt: None,
         },
         "glass" => Template {
             name: "glass",
@@ -104,6 +108,7 @@ pub fn builtin(name: &str) -> Option<Template> {
             canvas: CanvasBg::Linear { angle_deg: 135.0, from: hex("#1a1a2e"), to: hex("#16213e") },
             shadow: Some(Shadow { blur: 42.0, opacity: 0.45, offset_y: 14.0 }),
             border: Some(hex("#ffffff12")),
+            crt: None,
         },
         "classic" => Template {
             name: "classic",
@@ -121,6 +126,7 @@ pub fn builtin(name: &str) -> Option<Template> {
             canvas: CanvasBg::Solid(hex("#101014")),
             shadow: None,
             border: None,
+            crt: None,
         },
         "geist" => Template {
             name: "geist",
@@ -138,6 +144,7 @@ pub fn builtin(name: &str) -> Option<Template> {
             canvas: CanvasBg::Solid(hex("#000000")),
             shadow: None,
             border: Some(hex("#ffffff2e")),
+            crt: None,
         },
         "paper" => Template {
             name: "paper",
@@ -155,6 +162,25 @@ pub fn builtin(name: &str) -> Option<Template> {
             canvas: CanvasBg::Solid(hex("#e8e6df")),
             shadow: Some(Shadow { blur: 26.0, opacity: 0.18, offset_y: 8.0 }),
             border: Some(hex("#00000014")),
+            crt: None,
+        },
+        "crt" => Template {
+            name: "crt",
+            description: "Phosphor glow, scanlines, vignette — the shareable one",
+            theme: "phosphor",
+            family: Family::JetBrainsMono,
+            font_size: 17.0,
+            line_height: 1.3,
+            window: WindowStyle::Rounded,
+            titlebar: Titlebar::None,
+            titlebar_rule: false,
+            corner_radius: 16.0,
+            padding: 30.0,
+            inset: 34.0,
+            canvas: CanvasBg::Solid(hex("#0b0b09")),
+            shadow: Some(Shadow { blur: 34.0, opacity: 0.6, offset_y: 10.0 }),
+            border: Some(hex("#2c2c22aa")),
+            crt: Some(CRT_DEFAULT),
         },
         _ => return None,
     };
@@ -162,7 +188,7 @@ pub fn builtin(name: &str) -> Option<Template> {
 }
 
 pub fn template_names() -> &'static [&'static str] {
-    &["minimal", "glass", "classic", "geist", "paper"]
+    &["minimal", "glass", "classic", "geist", "paper", "crt"]
 }
 
 pub fn parse_window_style(s: &str) -> Option<WindowStyle> {

@@ -149,13 +149,25 @@ pub fn builtin(name: &str) -> Option<Theme> {
                 hex("#4589ff"), hex("#a56eff"), hex("#08bdba"), hex("#161616"),
             ],
         },
+        "phosphor" => Theme {
+            name: "phosphor".to_string(),
+            fg: hex("#33ff66"),
+            bg: hex("#0a0f0a"),
+            cursor: hex("#66ffa0"),
+            ansi: [
+                hex("#0e140e"), hex("#2ee65c"), hex("#33ff66"), hex("#7dffa3"),
+                hex("#1fb84a"), hex("#57f584"), hex("#45ec74"), hex("#a4ffbf"),
+                hex("#1d7a3c"), hex("#49f277"), hex("#5cff85"), hex("#a0ffba"),
+                hex("#2ecb5d"), hex("#7affa1"), hex("#68f792"), hex("#ccffdb"),
+            ],
+        },
         _ => return None,
     };
     Some(t)
 }
 
 pub fn theme_names() -> &'static [&'static str] {
-    &["reel-dark", "catppuccin-mocha", "tokyo-night", "geist-dark", "paper-light"]
+    &["reel-dark", "catppuccin-mocha", "tokyo-night", "geist-dark", "paper-light", "phosphor"]
 }
 
 // ---------------------------------------------------------------------------

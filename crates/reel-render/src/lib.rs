@@ -2,6 +2,7 @@
 
 pub mod chrome;
 pub mod font;
+pub mod fx;
 pub mod paths;
 pub mod plan;
 pub mod raster;
@@ -183,6 +184,10 @@ impl Renderer {
                 (h as f32 * cur_cell.1).ceil() as i32,
             );
             chrome::dim_except(&mut term, rect, 0.55);
+        }
+
+        if let Some(crt) = &tpl.crt {
+            fx::apply_crt(&mut term, crt, s);
         }
 
         let key = (term.width(), term.height());

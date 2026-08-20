@@ -386,11 +386,15 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
 
     if !quiet {
         if let Ok((settings, _)) = settings_from_config(&cfg) {
-            if matches!(settings.template.canvas, reel_render::template::CanvasBg::Linear { .. }) {
+            let gradient =
+                matches!(settings.template.canvas, reel_render::template::CanvasBg::Linear { .. });
+            if gradient || settings.template.crt.is_some() {
+                let why = if gradient { "a gradient canvas" } else { "glow effects" };
                 eprintln!(
-                    "note: template `{}` uses a gradient canvas, which pushes GIF output past \
+                    "note: template `{}` uses {why}, which pushes GIF output past \
                      the lossless 256-color palette — sizes grow and colors quantize. \
-                     A solid-canvas template (minimal, classic, geist) encodes exactly.",
+                     A solid-canvas template (minimal, classic, geist) encodes exactly, \
+                     and .webm output handles gradients natively.",
                     settings.template.name
                 );
             }
