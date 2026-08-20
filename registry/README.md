@@ -58,7 +58,10 @@ The equivalent by hand:
 On merge, the `gallery` workflow re-renders every template against the
 canonical demo cast and synthesizes every sound (`build_gallery.py`), then
 republishes the gallery — your pack shows up with live previews and its
-install command, automatically.
+install command, automatically. Templates that declare a `[prompt]` are
+previewed with it applied, the way `reel run` would show them. The page
+shell (HTML template, CSS, JS, fonts) lives in `registry/site/`;
+`build_gallery.py` only renders previews and injects the cards.
 
 Templates and sounds are declarative TOML — installing one can't execute
 anything. Sound recipes are pure synthesis parameters (no audio files), and
