@@ -184,6 +184,10 @@ render.
 
 ## Current limits (don't promise these)
 
+- reel renders with the machine's installed fonts (`[style] font` accepts
+  any family name). TUI icon glyphs need a Nerd Font installed — if icons
+  render as boxes, tell the user to install one (e.g. JetBrainsMono Nerd
+  Font) and re-render; no re-recording needed.
 - Outputs: `.gif`, `.webm`, `.png` (via `shot`), `.txt`. MP4 is deliberately
   unsupported (licensing); offer WebM instead.
 - reel cannot type into or drive a program (no script mode); it only edits

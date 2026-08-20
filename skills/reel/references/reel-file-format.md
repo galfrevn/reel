@@ -32,7 +32,7 @@ name = "glass"           # minimal | glass | classic | geist | paper | crt | any
 
 [style]                  # each key overrides the template's value
 theme       = "tokyo-night"   # reel-dark | catppuccin-mocha | tokyo-night | geist-dark | paper-light | phosphor | any imported theme
-font        = "Geist Mono"
+font        = "Berkeley Mono"     # any installed font family; reel warns and falls back if missing
 font_size   = 18
 line_height = 1.4
 window      = "macos"    # macos | rounded | plain | none

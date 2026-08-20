@@ -2,7 +2,6 @@
 //! Built-ins are code for now; the community-template TOML loader arrives
 //! with the registry (Phase 3).
 
-use crate::font::Family;
 use crate::fx::{CrtEffect, CRT_DEFAULT};
 use crate::theme::Rgba;
 
@@ -48,7 +47,8 @@ pub struct Template {
     pub name: String,
     pub description: String,
     pub theme: String,
-    pub family: Family,
+    /// Preferred font family name; `None` = the system monospace chain.
+    pub font: Option<String>,
     pub font_size: f32,
     pub line_height: f32,
     pub window: WindowStyle,
@@ -78,7 +78,7 @@ pub fn builtin(name: &str) -> Option<Template> {
             name: "minimal".into(),
             description: "High contrast, square corners, no chrome noise".into(),
             theme: "reel-dark".into(),
-            family: Family::JetBrainsMono,
+            font: None,
             font_size: 16.0,
             line_height: 1.35,
             window: WindowStyle::Plain,
@@ -96,7 +96,7 @@ pub fn builtin(name: &str) -> Option<Template> {
             name: "glass".into(),
             description: "Soft gradient, rounded chrome, generous air".into(),
             theme: "catppuccin-mocha".into(),
-            family: Family::JetBrainsMono,
+            font: None,
             font_size: 17.0,
             line_height: 1.45,
             window: WindowStyle::MacOs,
@@ -114,7 +114,7 @@ pub fn builtin(name: &str) -> Option<Template> {
             name: "classic".into(),
             description: "Bare terminal, no chrome — for purists and docs embeds".into(),
             theme: "reel-dark".into(),
-            family: Family::JetBrainsMono,
+            font: None,
             font_size: 16.0,
             line_height: 1.3,
             window: WindowStyle::None,
@@ -132,7 +132,7 @@ pub fn builtin(name: &str) -> Option<Template> {
             name: "geist".into(),
             description: "Pure black, Geist Mono, hairline border — deploy-preview energy".into(),
             theme: "geist-dark".into(),
-            family: Family::GeistMono,
+            font: Some("Geist Mono".into()),
             font_size: 15.0,
             line_height: 1.55,
             window: WindowStyle::Rounded,
@@ -150,7 +150,7 @@ pub fn builtin(name: &str) -> Option<Template> {
             name: "paper".into(),
             description: "Light background, for daytime documentation".into(),
             theme: "paper-light".into(),
-            family: Family::JetBrainsMono,
+            font: None,
             font_size: 16.0,
             line_height: 1.4,
             window: WindowStyle::Rounded,
@@ -168,7 +168,7 @@ pub fn builtin(name: &str) -> Option<Template> {
             name: "crt".into(),
             description: "Phosphor glow, scanlines, vignette — the shareable one".into(),
             theme: "phosphor".into(),
-            family: Family::JetBrainsMono,
+            font: None,
             font_size: 17.0,
             line_height: 1.3,
             window: WindowStyle::Rounded,
@@ -211,7 +211,7 @@ struct TemplateFile {
     name: Option<String>,
     description: Option<String>,
     theme: Option<String>,
-    /// "jetbrains" or "geist".
+    /// Any installed font family name (resolved at render time).
     font: Option<String>,
     font_size: Option<f32>,
     line_height: Option<f32>,
@@ -274,12 +274,8 @@ pub fn from_toml(text: &str, fallback_name: &str) -> Result<Template, String> {
     if let Some(theme) = f.theme {
         t.theme = theme;
     }
-    if let Some(font) = &f.font {
-        t.family = match font.to_ascii_lowercase() {
-            ref s if s.contains("geist") => Family::GeistMono,
-            ref s if s.contains("jetbrains") => Family::JetBrainsMono,
-            _ => return Err(format!("unknown font `{font}` (jetbrains or geist)")),
-        };
+    if f.font.is_some() {
+        t.font = f.font;
     }
     if let Some(v) = f.font_size {
         t.font_size = v;
@@ -348,13 +344,7 @@ pub fn to_toml(t: &Template) -> String {
         name: Some(t.name.clone()),
         description: (!t.description.is_empty()).then(|| t.description.clone()),
         theme: Some(t.theme.clone()),
-        font: Some(
-            match t.family {
-                Family::GeistMono => "geist",
-                Family::JetBrainsMono => "jetbrains",
-            }
-            .to_string(),
-        ),
+        font: t.font.clone(),
         font_size: Some(t.font_size),
         line_height: Some(t.line_height),
         window: Some(

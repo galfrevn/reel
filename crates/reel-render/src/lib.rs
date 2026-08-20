@@ -14,7 +14,7 @@ pub use template::{Template, WindowStyle};
 pub use theme::{Rgba, Theme};
 pub use tiny_skia::Pixmap;
 
-use font::{Family, GlyphPixels, Rasterizer, Variant};
+use font::{GlyphPixels, Rasterizer, Variant};
 use raster::GridStyle;
 use reel_format::ReelConfig;
 use reel_term::Snapshot;
@@ -28,6 +28,8 @@ pub enum RenderError {
     UnknownTheme(String, String),
     #[error("unknown window style `{0}` (expected macos, rounded, plain, or none)")]
     UnknownWindow(String),
+    #[error("{0}")]
+    Font(String),
 }
 
 #[derive(Debug, Clone)]
@@ -42,7 +44,7 @@ pub struct RenderSettings {
 /// Layering per the spec: built-in defaults → template → `[style]` overrides.
 /// (CLI flags are applied by the caller before this.)
 pub fn settings_from_config(cfg: &ReelConfig) -> Result<(RenderSettings, Vec<String>), RenderError> {
-    let mut warnings = Vec::new();
+    let warnings = Vec::new();
     let mut tpl = template::lookup(&cfg.template.name).ok_or_else(|| {
         let mut names: Vec<String> =
             template::template_names().iter().map(|s| s.to_string()).collect();
@@ -65,16 +67,8 @@ pub fn settings_from_config(cfg: &ReelConfig) -> Result<(RenderSettings, Vec<Str
             template::parse_window_style(w).ok_or_else(|| RenderError::UnknownWindow(w.clone()))?;
     }
     if let Some(f) = &style.font {
-        let lower = f.to_ascii_lowercase();
-        if lower.contains("geist") {
-            tpl.family = Family::GeistMono;
-        } else if lower.contains("jetbrains") {
-            tpl.family = Family::JetBrainsMono;
-        } else {
-            warnings.push(format!(
-                "font `{f}` is not available — embedded families are JetBrains Mono NL and Geist Mono"
-            ));
-        }
+        // Resolved against installed fonts when the renderer is built.
+        tpl.font = Some(f.clone());
     }
 
     let theme_name = style.theme.as_deref().unwrap_or(tpl.theme.as_str());
@@ -104,15 +98,29 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(settings: RenderSettings) -> Self {
-        Renderer { settings, raster: Rasterizer::new(), chrome_base: None }
+    /// Builds a renderer against the installed system fonts. The warnings
+    /// (e.g. the template's preferred font missing) are for the caller to
+    /// surface.
+    pub fn new(settings: RenderSettings) -> Result<(Self, Vec<String>), RenderError> {
+        let (raster, warning) = Rasterizer::new(settings.template.font.as_deref())
+            .map_err(RenderError::Font)?;
+        Ok((
+            Renderer { settings, raster, chrome_base: None },
+            warning.into_iter().collect(),
+        ))
     }
 
-    /// Swaps settings while keeping the glyph cache warm (it's keyed by
-    /// glyph/size, independent of theme or template). Used by `reel watch`.
-    pub fn set_settings(&mut self, settings: RenderSettings) {
+    /// Swaps settings while keeping the font database and glyph cache warm
+    /// (faces persist; the primary family re-resolves). Used by `reel watch`.
+    pub fn set_settings(&mut self, settings: RenderSettings) -> Result<Vec<String>, RenderError> {
+        let warning = self
+            .raster
+            .fonts
+            .set_primary(settings.template.font.as_deref())
+            .map_err(RenderError::Font)?;
         self.settings = settings;
         self.chrome_base = None;
+        Ok(warning.into_iter().collect())
     }
 
     fn base_font_px(&self) -> f32 {
@@ -122,7 +130,6 @@ impl Renderer {
     /// Terminal image size in pixels for a given grid.
     pub fn term_size(&mut self, cols: u16, rows: u16) -> (u32, u32) {
         let m = self.raster.fonts.cell_metrics(
-            self.settings.template.family,
             self.base_font_px(),
             self.settings.template.line_height,
         );
@@ -145,7 +152,7 @@ impl Renderer {
         let tpl = self.settings.template.clone();
         let theme = self.settings.theme.clone();
         let base_px = self.base_font_px();
-        let base_m = self.raster.fonts.cell_metrics(tpl.family, base_px, tpl.line_height);
+        let base_m = self.raster.fonts.cell_metrics(base_px, tpl.line_height);
         let term_w = (snap.cols as f32 * base_m.cell_w).ceil() as u32;
         let term_h = (snap.rows as f32 * base_m.cell_h).ceil() as u32;
 
@@ -155,11 +162,11 @@ impl Renderer {
             // Re-rasterize at the zoomed size so text stays sharp — never
             // upscale pixels.
             let zoom_px = base_px * z as f32;
-            let zm = self.raster.fonts.cell_metrics(tpl.family, zoom_px, tpl.line_height);
+            let zm = self.raster.fonts.cell_metrics(zoom_px, tpl.line_height);
             let big = raster::raster_grid(
                 &mut self.raster,
                 snap,
-                &GridStyle { theme: &theme, family: tpl.family, font_size: zoom_px, line_height: tpl.line_height },
+                &GridStyle { theme: &theme, font_size: zoom_px, line_height: tpl.line_height },
             );
             let cx = (frame.camera.center.0 as f32 + 0.5) * zm.cell_w;
             let cy = (frame.camera.center.1 as f32 + 0.5) * zm.cell_h;
@@ -174,7 +181,7 @@ impl Renderer {
             let pix = raster::raster_grid(
                 &mut self.raster,
                 snap,
-                &GridStyle { theme: &theme, family: tpl.family, font_size: base_px, line_height: tpl.line_height },
+                &GridStyle { theme: &theme, font_size: base_px, line_height: tpl.line_height },
             );
             (pix, (0, 0), (base_m.cell_w, base_m.cell_h))
         };
@@ -209,8 +216,7 @@ impl Renderer {
 
     fn draw_caption(&mut self, canvas: &mut Pixmap, text: &str, pos: CaptionPos, s: f32) {
         let size = (self.settings.template.font_size * 0.95 * s).max(10.0);
-        let family = self.settings.template.family;
-        let m = self.raster.fonts.cell_metrics(family, size, 1.0);
+        let m = self.raster.fonts.cell_metrics(size, 1.0);
         let text_w: f32 = text.chars().count() as f32 * m.cell_w;
         let pad_x = 14.0 * s;
         let pad_y = 8.0 * s;
@@ -238,7 +244,7 @@ impl Renderer {
         let mut pen_x = x + pad_x;
         let baseline_y = y + pad_y + m.baseline;
         for chr in text.chars() {
-            if let Some(g) = self.raster.glyph(chr, family, Variant::Bold, size) {
+            if let Some(g) = self.raster.glyph(chr, Variant::Bold, size) {
                 let gx = pen_x.round() as i32 + g.left;
                 let gy = baseline_y.round() as i32 - g.top;
                 match &g.pixels {
@@ -320,7 +326,7 @@ mod tests {
 
     #[test]
     fn glass_frame_composites() {
-        let mut r = Renderer::new(settings("glass"));
+        let mut r = Renderer::new(settings("glass")).unwrap().0;
         let s = snap(r#"[0.1, "o", "$ reel render demo.reel"]"#);
         let pix = r.render_frame(&s, &base_frame());
         let (cw, chh) = r.canvas_size(40, 10);
@@ -332,7 +338,7 @@ mod tests {
 
     #[test]
     fn zoom_magnifies_content() {
-        let mut r = Renderer::new(settings("minimal"));
+        let mut r = Renderer::new(settings("minimal")).unwrap().0;
         let s = snap(r#"[0.1, "o", "XYZXYZXYZ"]"#);
         let base = r.render_frame(&s, &base_frame());
         let mut zframe = base_frame();
@@ -345,7 +351,7 @@ mod tests {
 
     #[test]
     fn caption_draws_a_pill() {
-        let mut r = Renderer::new(settings("minimal"));
+        let mut r = Renderer::new(settings("minimal")).unwrap().0;
         let s = snap(r#"[0.1, "o", "hi"]"#);
         let mut f = base_frame();
         f.captions.push(plan::CaptionDraw { text: "Look here".into(), pos: CaptionPos::Bottom });

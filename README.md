@@ -153,8 +153,11 @@ polish, never information.
   `reel template show glass > mine.toml`, edit, `reel template add mine.toml`,
   or install packs from any GitHub repo with `reel template add owner/repo`
 - Theme import: base16 YAML, Alacritty TOML/YAML, iTerm2 `.itermcolors`
-- Embedded fonts (JetBrains Mono NL Nerd Font, Geist Mono) with a fallback
-  chain — byte-identical output across machines
+- System font discovery with a Nerd-Font-first preference chain and a
+  lazy per-glyph fallback scan (icons, box drawing, braille, emoji resolve
+  against whatever is installed). Name any installed font with
+  `[style] font = "..."`. Install a Nerd Font for TUI icon glyphs; output
+  is deterministic for a given set of installed fonts
 - Change-driven GIF encoding: frames on grid change (not a clock), exact
   palette when content fits 256 colors, delta rectangles
 - WebM: VP9 (screen-content tuned) + Opus in a deterministic in-house muxer
@@ -170,6 +173,8 @@ The repo doubles as a GitHub Action, so README demos never go stale:
 - uses: galfrevn/reel@main
   with:
     files: docs/demo.reel
+    # font: JetBrainsMono   # Nerd Font installed on the runner (default);
+                            # pin it so CI renders don't drift with fonts
 - uses: stefanzweifel/git-auto-commit-action@v5
   with:
     commit_message: "chore: re-render demos"
@@ -199,10 +204,10 @@ Video output links libvpx at build time (`brew install libvpx` /
 `cargo build --no-default-features -p reel-cli` builds everything except
 `.webm` in pure Rust — audio synthesis included.
 
-Fonts are embedded at build time from `assets/fonts/` (SIL OFL, license
-vendored alongside).
+reel renders with the fonts installed on your machine — no fonts ship in
+the binary. For TUI demos, install any [Nerd Font](https://www.nerdfonts.com)
+build so icon glyphs render; reel prefers one automatically when present.
 
 ## License
 
-MIT. Embedded fonts are licensed under the SIL Open Font License — see
-`assets/fonts/OFL.txt`.
+MIT.

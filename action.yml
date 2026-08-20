@@ -21,6 +21,10 @@ inputs:
     description: "Extra arguments passed to every `reel render` (e.g. --budget 800kb)"
     required: false
     default: ""
+  font:
+    description: "Nerd Font to install on the runner (reel renders with system fonts; pin one so CI output is stable). Set to 'none' to skip."
+    required: false
+    default: "JetBrainsMono"
 
 runs:
   using: composite
@@ -30,6 +34,14 @@ runs:
       run: |
         curl -fsSL https://raw.githubusercontent.com/galfrevn/reel/main/setup.sh | bash
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    - name: Install font
+      if: inputs.font != 'none'
+      shell: bash
+      run: |
+        mkdir -p "$HOME/.local/share/fonts"
+        curl -fsSL "https://github.com/ryanoasis/nerd-fonts/releases/latest/download/${{ inputs.font }}.tar.xz" \
+          | tar -xJ -C "$HOME/.local/share/fonts"
 
     - name: Render
       shell: bash

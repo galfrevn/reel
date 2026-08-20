@@ -84,9 +84,10 @@ fn uniform_dims(snaps: &[Snapshot]) -> bool {
 }
 
 fn render_frames(loaded: &Loaded, cfg: &ReelConfig, quiet: bool) -> Result<(Vec<RgbaFrame>, Vec<String>)> {
-    let (settings, warnings) = settings_from_config(cfg)?;
+    let (settings, mut warnings) = settings_from_config(cfg)?;
     let fps = settings.fps;
-    let mut renderer = Renderer::new(settings);
+    let (mut renderer, font_warnings) = Renderer::new(settings)?;
+    warnings.extend(font_warnings);
     let frames = plan(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps);
     if !quiet {
         eprintln!(
@@ -490,7 +491,7 @@ pub fn shot(path: &Path, at: &str, out: Option<PathBuf>, template: Option<String
     let cfg = loaded.file.config.clone();
     let (settings, _) = settings_from_config(&cfg)?;
     let fps = settings.fps;
-    let mut renderer = Renderer::new(settings);
+    let (mut renderer, _) = Renderer::new(settings)?;
     let frames = plan(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps);
     let frame = frames
         .iter()
@@ -605,8 +606,10 @@ pub fn render_for_watch(
     let (settings, _) = settings_from_config(&file.config)?;
     let fps = settings.fps;
     match cache.renderer.as_mut() {
-        Some(r) => r.set_settings(settings),
-        None => cache.renderer = Some(Renderer::new(settings)),
+        Some(r) => {
+            r.set_settings(settings)?;
+        }
+        None => cache.renderer = Some(Renderer::new(settings)?.0),
     }
     let renderer = cache.renderer.as_mut().unwrap();
 
