@@ -28,17 +28,23 @@ fps    = 30              # frame-rate cap; frames are emitted on grid change, no
 scale  = 2               # supersampling factor for crisp text (1-4)
 
 [template]
-name = "glass"           # minimal | glass | classic | geist | paper
+name = "glass"           # minimal | glass | classic | geist | paper | crt | any installed template
 
 [style]                  # each key overrides the template's value
-theme       = "tokyo-night"   # reel-dark | catppuccin-mocha | tokyo-night | geist-dark | paper-light
+theme       = "tokyo-night"   # reel-dark | catppuccin-mocha | tokyo-night | geist-dark | paper-light | phosphor | any imported theme
 font        = "Geist Mono"
 font_size   = 18
 line_height = 1.4
 window      = "macos"    # macos | rounded | plain | none
 padding     = 48
 
-[audio]                  # parsed but INERT — audio is not rendered yet
+[audio]                  # rendered into .webm output only; ignored for .gif
+enabled   = true         # optional; defaults to on when any audio key or sound op is present
+keyboard  = "mx-brown"   # mx-brown | mx-blue | topre | laptop | typewriter | none
+volume    = 0.35         # master level 0..1
+ui_sounds = true         # auto pops when the screen responds after idle
+thinking  = "soft-pulse" # idle-gap bed recipe, or "none"
+bed       = "none"       # ambient loop recipe, default off
 ```
 
 Layering order (later wins): built-in defaults → template → `[style]`
@@ -86,10 +92,17 @@ Zoom coordinates are **grid cells** (column, row), not pixels — they survive
 font-size and template changes. Text is re-rasterized at the zoomed size, so
 it stays sharp.
 
-### Audio (parsed, not yet rendered)
+### Audio ops (heard in .webm output; silently ignored in .gif)
 
-`sound "name" at T`, `mute A..B`, `volume LEVEL from A to B` parse without
-error but produce nothing. Don't write them into files you generate.
+- `sound "name" at T` — place a one-shot. Names: chime, sparkle, droplet,
+  bloom, whisper, tick, press, release, toggle, success, error, page,
+  loading, ready, pulse, scan, arrival, soft-pulse.
+- `mute A..B` — drop every generated sound anchored in the source range.
+- `volume LEVEL from A to B` — scale generated sounds in the range (e.g.
+  `volume 0.15 from 8s to 34s` under a sped-up thinking pause).
+
+Keyboard/UI/thinking layers are automatic from the `[audio]` table; ops are
+for moments you choose. Anchors are source time like everything else.
 
 ## Worked example
 

@@ -1,11 +1,12 @@
 ---
 name: reel
-description: Turn terminal recordings into polished, shareable demo GIFs using the reel CLI — record a session once with asciinema, then edit it like video (trim dead air, cut mistakes, speed-ramp slow parts, zoom, caption) and render a styled, size-budgeted GIF without ever re-running the program. Use this skill whenever the user wants a demo of their CLI or TUI, a GIF for a README, launch tweet, or docs, wants to shorten/clean up/restyle a terminal recording, mentions asciinema or .cast files, or asks to "record my terminal" or "make a demo" of a command-line tool — even if they never mention reel by name.
+description: Turn terminal recordings into polished, shareable demos using the reel CLI — record a session once (reel record or asciinema), then edit it like video (trim dead air, cut mistakes, speed-ramp slow parts, zoom, caption) and render a styled, size-budgeted GIF, or a WebM with procedurally synthesized sound, without ever re-running the program. Use this skill whenever the user wants a demo of their CLI or TUI, a GIF for a README, launch tweet, or docs, wants to shorten/clean up/restyle a terminal recording, mentions asciinema or .cast files, or asks to "record my terminal" or "make a demo" of a command-line tool — even if they never mention reel by name.
 ---
 
 # Making terminal demos with reel
 
-reel turns an asciinema `.cast` recording into a styled, edited GIF. The core
+reel turns a terminal recording (`.cast`) into a styled, edited GIF or WebM
+(VP9 + Opus audio). The core
 promise: **the recorded program runs exactly once**. Every edit — trimming
 dead air, speeding up slow parts, changing theme or template — is a pure
 re-render of the frozen recording, so iterating takes milliseconds and costs
@@ -21,12 +22,11 @@ things you can't do: performing the live session, and judging taste.
 Check for the tools; install whichever is missing:
 
 ```sh
-reel --version      || curl -fsSL https://raw.githubusercontent.com/galfrevn/reel/main/setup.sh | bash
-asciinema --version || brew install asciinema   # or: pipx install asciinema
+reel --version || curl -fsSL https://raw.githubusercontent.com/galfrevn/reel/main/setup.sh | bash
 ```
 
-asciinema is only needed for recording (reel's own recorder isn't shipped
-yet). If the user already has a `.cast` file, reel alone is enough.
+reel records, edits, and renders on its own; asciinema `.cast` files also
+work as input if the user already has one.
 
 ## Workflow
 
@@ -37,8 +37,12 @@ this is the one step that needs their hands, since demos usually show an
 interactive session. Give them the exact command and what to do in it:
 
 ```sh
-asciinema rec session.cast -- <the command to demo>
+reel record -o session.cast -- <the command to demo>
 ```
+
+This also writes a `session.cast.reelmeta` sidecar with timestamped
+keystrokes — keep the two files together; the sidecar is what makes
+keyboard audio accurate. (`asciinema rec` works too, without the sidecar.)
 
 Tell them: perform the demo naturally and don't worry about pauses, typos, or
 pacing — all of that gets fixed in the edit. Ctrl+D or `exit` ends the
@@ -90,6 +94,7 @@ cut     19s..23s
 speed   5x from 8s to 34s
 caption "Refactor the auth module" at 4s for 2.5s
 zoom    1.8x at (30,10) from 36s to 41s
+sound   "success" at 41s
 freeze  last 1.5s
 ```
 
@@ -137,16 +142,50 @@ expressed taste:
 | `classic` | Bare terminal, no chrome; embeds where chrome would clash |
 | `geist` | Pure-black Vercel-docs look, Geist Mono |
 | `paper` | Light background; daytime documentation sites |
+| `crt` | Phosphor glow, scanlines, vignette; the eye-catching share |
 
 Gradient backgrounds (like `glass`) cost GIF palette efficiency. If a tight
 size budget starts visibly degrading quality, switch to a solid-canvas
 template (`minimal`, `classic`, `geist`) and tell the user why.
 
+## Audio (WebM only)
+
+Set the output to `.webm` and add an `[audio]` table to get sound — every
+tone is synthesized from recipes, no audio files exist anywhere:
+
+```
+[output]
+file = "demo.webm"
+
+[audio]
+keyboard = "mx-brown"    # or mx-blue, topre, laptop, typewriter, none
+```
+
+Keystroke sounds come from the recording's input events (or are inferred
+from the grid), UI-response pops from the grid diff, and long idle
+stretches get a low "thinking" pulse that resolves to a chime — all
+automatic. `sound "name" at T` places one-shots (success, error, chime,
+sparkle, droplet…); `mute A..B` and `volume 0.15 from A to B` shape
+regions. Speeding a region up *drops* key sounds rather than pitch-shifting
+them. GIF output ignores audio silently.
+
+Rules of thumb: demos must read fine muted (GitHub/social autoplay silent);
+audio is polish, never information. Pass `--no-audio` to A/B a silent
+render.
+
+## Themes and templates beyond the built-ins
+
+- `reel theme import <file>` accepts base16 YAML, Alacritty TOML/YAML, and
+  iTerm2 `.itermcolors` — use the palette the user already loves, then
+  `[style] theme = "<name>"`.
+- `reel template show glass > mine.toml`, edit, `reel template add
+  mine.toml` for a custom look; `reel template add owner/repo` installs a
+  pack from GitHub.
+
 ## Current limits (don't promise these)
 
-- Outputs today: `.gif`, `.png` (via `shot`), `.txt`. **No WebM/MP4 video and
-  no audio yet** — the parser tolerates `[audio]` config and `sound`/`mute`/
-  `volume` ops, but nothing is rendered. Don't write them.
+- Outputs: `.gif`, `.webm`, `.png` (via `shot`), `.txt`. MP4 is deliberately
+  unsupported (licensing); offer WebM instead.
 - reel cannot type into or drive a program (no script mode); it only edits
   existing recordings.
-- `reel record` doesn't exist yet; recording goes through `asciinema rec`.
+- Windows support is best-effort and untested.
