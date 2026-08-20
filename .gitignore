@@ -3,3 +3,4 @@ target/
 !documentation/assets/*.gif
 .DS_Store
 .claude/worktrees/
+.claude/skills/
