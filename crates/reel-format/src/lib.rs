@@ -559,7 +559,7 @@ impl<'a> Args<'a> {
     }
 
     /// A `from A to B` range.
-    fn from_to(&mut self) -> Result<(TimeExpr, TimeExpr), FormatError> {
+    fn range_from_to(&mut self) -> Result<(TimeExpr, TimeExpr), FormatError> {
         self.keyword("from")?;
         let a = self.time()?;
         self.keyword("to")?;
@@ -650,7 +650,7 @@ fn parse_op(name: &str, toks: &[Token], line: usize) -> Result<RawOp, FormatErro
         "cut" => RawOp::Cut { range: a.time_range()? },
         "speed" => {
             let factor = a.factor()?;
-            let range = a.from_to()?;
+            let range = a.range_from_to()?;
             RawOp::Speed { factor, range }
         }
         "hold" => {
@@ -683,7 +683,7 @@ fn parse_op(name: &str, toks: &[Token], line: usize) -> Result<RawOp, FormatErro
             a.keyword("to")?;
             let t = a.tuple(2)?;
             let to = (to_cell(t[0], line, "pan col")?, to_cell(t[1], line, "pan row")?);
-            let range = a.from_to()?;
+            let range = a.range_from_to()?;
             RawOp::Pan { to, range }
         }
         "caption" => {
@@ -739,7 +739,7 @@ fn parse_op(name: &str, toks: &[Token], line: usize) -> Result<RawOp, FormatErro
                 .word()?
                 .parse::<f64>()
                 .map_err(|_| err(line, "`volume`: expected a level like `0.15`"))?;
-            let range = a.from_to()?;
+            let range = a.range_from_to()?;
             RawOp::Volume { level, range }
         }
         other => {

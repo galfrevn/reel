@@ -64,10 +64,8 @@ pub fn watch(
     let ensure_watched = |watcher: &mut dyn Watcher, watched: &mut Vec<PathBuf>, p: &Path| {
         if let Some(dir) = p.parent() {
             let dir = dir.to_path_buf();
-            if !watched.contains(&dir) {
-                if watcher.watch(&dir, RecursiveMode::NonRecursive).is_ok() {
-                    watched.push(dir);
-                }
+            if !watched.contains(&dir) && watcher.watch(&dir, RecursiveMode::NonRecursive).is_ok() {
+                watched.push(dir);
             }
         }
     };

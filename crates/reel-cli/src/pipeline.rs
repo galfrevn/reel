@@ -172,36 +172,41 @@ pub fn render_with_source(path: &Path, cast: &Path, quiet: bool) -> Result<()> {
     dispatch_render(&loaded, cfg, &out_path, quiet)
 }
 
-pub fn render(
-    path: &Path,
-    out: Option<PathBuf>,
-    template: Option<String>,
-    budget: Option<String>,
-    scale: Option<u32>,
-    aspect: Option<String>,
-    size: Option<String>,
-    no_audio: bool,
-    quiet: bool,
-) -> Result<()> {
-    let loaded = load(path, template, quiet)?;
+/// CLI overrides applied on top of the .reel file's own config.
+#[derive(Default)]
+pub struct RenderArgs {
+    pub out: Option<PathBuf>,
+    pub template: Option<String>,
+    pub budget: Option<String>,
+    pub scale: Option<u32>,
+    pub aspect: Option<String>,
+    pub size: Option<String>,
+    pub no_audio: bool,
+    pub quiet: bool,
+}
+
+pub fn render(path: &Path, args: RenderArgs) -> Result<()> {
+    let quiet = args.quiet;
+    let loaded = load(path, args.template, quiet)?;
     let mut cfg = loaded.file.config.clone();
-    if let Some(s) = scale {
+    if let Some(s) = args.scale {
         cfg.output.scale = s;
     }
-    if aspect.is_some() {
-        cfg.output.aspect = aspect;
+    if args.aspect.is_some() {
+        cfg.output.aspect = args.aspect;
     }
-    if size.is_some() {
-        cfg.output.size = size;
+    if args.size.is_some() {
+        cfg.output.size = args.size;
     }
-    if let Some(b) = budget {
+    if let Some(b) = args.budget {
         cfg.output.budget = Some(b);
     }
-    if no_audio {
+    if args.no_audio {
         cfg.audio.enabled = Some(false);
     }
 
-    let out_path = out
+    let out_path = args
+        .out
         .or_else(|| cfg.output.file.as_ref().map(|f| loaded.base_dir.join(f)))
         .unwrap_or_else(|| path.with_extension("gif"));
     dispatch_render(&loaded, cfg, &out_path, quiet)

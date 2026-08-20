@@ -125,8 +125,9 @@ pub fn compose_base(
         if let Some(sh) = &tpl.shadow {
             draw_shadow(&mut canvas, &l, radius, sh.blur * s, sh.opacity, sh.offset_y * s);
         }
+        let win = Rect::from_xywh(l.win_x, l.win_y, l.win_w, l.win_h).expect("window rect");
         // Window body in the theme background so padding blends with content.
-        fill_rounded(&mut canvas, l.win_x, l.win_y, l.win_w, l.win_h, radius, theme.bg);
+        fill_rounded(&mut canvas, win, radius, theme.bg);
         match tpl.titlebar {
             Titlebar::TrafficLights => draw_dots(
                 &mut canvas,
@@ -152,7 +153,7 @@ pub fn compose_base(
             );
         }
         if let Some(border) = tpl.border {
-            stroke_rounded(&mut canvas, l.win_x, l.win_y, l.win_w, l.win_h, radius, border, s);
+            stroke_rounded(&mut canvas, win, radius, border, s);
         }
     }
     canvas
@@ -215,18 +216,20 @@ fn draw_canvas_bg(canvas: &mut Pixmap, bg: &CanvasBg) {
             let (cx, cy) = (w / 2.0, h / 2.0);
             let start = Point::from_xy(cx - dx * half, cy - dy * half);
             let end = Point::from_xy(cx + dx * half, cy + dy * half);
-            let mut paint = Paint::default();
-            paint.shader = LinearGradient::new(
-                start,
-                end,
-                vec![
-                    GradientStop::new(0.0, skia_color(from)),
-                    GradientStop::new(1.0, skia_color(to)),
-                ],
-                SpreadMode::Pad,
-                Transform::identity(),
-            )
-            .expect("gradient");
+            let paint = Paint {
+                shader: LinearGradient::new(
+                    start,
+                    end,
+                    vec![
+                        GradientStop::new(0.0, skia_color(from)),
+                        GradientStop::new(1.0, skia_color(to)),
+                    ],
+                    SpreadMode::Pad,
+                    Transform::identity(),
+                )
+                .expect("gradient"),
+                ..Paint::default()
+            };
             let rect = Rect::from_xywh(0.0, 0.0, w, h).unwrap();
             canvas.fill_rect(rect, &paint, Transform::identity(), None);
         }
@@ -237,11 +240,12 @@ fn skia_color(c: Rgba) -> tiny_skia::Color {
     tiny_skia::Color::from_rgba8(c.r, c.g, c.b, c.a)
 }
 
-fn rounded_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> tiny_skia::Path {
+fn rounded_path(rect: Rect, r: f32) -> tiny_skia::Path {
+    let (x, y, w, h) = (rect.x(), rect.y(), rect.width(), rect.height());
     let r = r.min(w / 2.0).min(h / 2.0).max(0.0);
     let mut pb = PathBuilder::new();
     if r <= 0.5 {
-        pb.push_rect(Rect::from_xywh(x, y, w, h).unwrap());
+        pb.push_rect(rect);
         return pb.finish().unwrap();
     }
     // Cubic approximation of quarter circles.
@@ -259,16 +263,16 @@ fn rounded_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> tiny_skia::Path {
     pb.finish().unwrap()
 }
 
-fn fill_rounded(canvas: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, r: f32, c: Rgba) {
-    let path = rounded_path(x, y, w, h, r);
+fn fill_rounded(canvas: &mut Pixmap, rect: Rect, r: f32, c: Rgba) {
+    let path = rounded_path(rect, r);
     let mut paint = Paint::default();
     paint.set_color(skia_color(c));
     paint.anti_alias = true;
     canvas.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
 }
 
-fn stroke_rounded(canvas: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, r: f32, c: Rgba, s: f32) {
-    let path = rounded_path(x, y, w, h, r);
+fn stroke_rounded(canvas: &mut Pixmap, rect: Rect, r: f32, c: Rgba, s: f32) {
+    let path = rounded_path(rect, r);
     let mut paint = Paint::default();
     paint.set_color(skia_color(c));
     paint.anti_alias = true;

@@ -135,14 +135,11 @@ pub fn render_demo_preview(template_ref: &str, label: &str) -> Result<PathBuf> {
     let out = dir.join(format!("{label}.webm"));
     crate::pipeline::render(
         &cast,
-        Some(out.clone()),
-        Some(template_ref.to_string()),
-        None,
-        None,
-        None,
-        None,
-        false,
-        false,
+        crate::pipeline::RenderArgs {
+            out: Some(out.clone()),
+            template: Some(template_ref.to_string()),
+            ..Default::default()
+        },
     )?;
     Ok(out)
 }

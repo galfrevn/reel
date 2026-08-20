@@ -28,9 +28,9 @@ pub fn smooth_typing(snapshots: &mut Vec<Snapshot>, keys: &[KeyPress]) {
     let mut out: Vec<Snapshot> = Vec::with_capacity(snapshots.len() + keys.len());
     out.push(snapshots[0].clone());
 
-    for b_idx in 1..snapshots.len() {
+    for snap in snapshots.iter().skip(1) {
         let a = out.last().unwrap().clone();
-        let mut b = snapshots[b_idx].clone();
+        let mut b = snap.clone();
         if a.cols != b.cols || a.rows != b.rows {
             out.push(b);
             continue;

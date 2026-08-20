@@ -212,7 +212,7 @@ fn find_st(buf: &[u8], from: usize) -> Option<(usize, usize)> {
 fn partial_intro_len(buf: &[u8]) -> usize {
     for keep in (1..=2.min(buf.len())).rev() {
         let tail = &buf[buf.len() - keep..];
-        if b"\x1bP".starts_with(tail) || b"\x1b_G"[..2.min(3)].starts_with(tail) {
+        if b"\x1bP".starts_with(tail) || b"\x1b_G".starts_with(tail) {
             return keep;
         }
     }
@@ -478,7 +478,7 @@ mod tests {
         let (rgba, w, h) = decode_sixel_sequence(&seq[..seq.len() - 2]).unwrap();
         assert_eq!((w, h), (4, 6));
         assert_eq!(&rgba[0..4], &[255, 0, 0, 255]); // left: red
-        let right = ((0 * w + 2) * 4) as usize;
+        let right = 2 * 4; // row 0, col 2
         assert_eq!(&rgba[right..right + 4], &[0, 0, 255, 255]); // right: blue
     }
 

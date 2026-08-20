@@ -8,6 +8,9 @@ use reel_render::theme::{self, Theme};
 use reel_render::Rgba;
 use std::path::Path;
 
+/// A parsed theme, its default name, and an optional (font family, size) hint.
+type ThemeImport = (Theme, String, Option<(String, f32)>);
+
 /// Imports the theme straight from an installed terminal's own settings.
 pub fn import_from_terminal(which: &str, name: Option<String>) -> Result<()> {
     let home = std::env::var("HOME").map(std::path::PathBuf::from).ok();
@@ -65,7 +68,7 @@ fn install_theme(theme: &Theme) -> Result<String> {
 }
 
 /// The *active* iTerm2 profile from its preferences plist.
-fn from_iterm_profile(path: &Path) -> Result<(Theme, String, Option<(String, f32)>)> {
+fn from_iterm_profile(path: &Path) -> Result<ThemeImport> {
     let value = plist::Value::from_file(path)
         .with_context(|| format!("parsing {}", path.display()))?;
     let root = value
@@ -189,10 +192,7 @@ impl TermDialect for GhosttyDialect {
     }
 }
 
-fn from_keyvalue_config(
-    path: &Path,
-    dialect: impl TermDialect,
-) -> Result<(Theme, String, Option<(String, f32)>)> {
+fn from_keyvalue_config(path: &Path, dialect: impl TermDialect) -> Result<ThemeImport> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading {}", path.display()))?;
     let mut ansi: [Option<Rgba>; 16] = [None; 16];

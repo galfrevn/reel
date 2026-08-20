@@ -37,7 +37,7 @@ pub fn capture(path: &Path, file: &ReelFile, quiet: bool) -> Result<PathBuf> {
         .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| anyhow!("openpty: {e}"))?;
     let mut cmd = shell_words(command)?;
-    let mut builder = CommandBuilder::new(&cmd.remove(0));
+    let mut builder = CommandBuilder::new(cmd.remove(0));
     builder.args(&cmd);
     builder.env("TERM", "xterm-256color");
     builder.env("COLORTERM", "truecolor");
@@ -132,7 +132,7 @@ pub fn capture(path: &Path, file: &ReelFile, quiet: bool) -> Result<PathBuf> {
 
     let mut inputs: Vec<InputEvent> = Vec::new();
     // Deterministic typing jitter.
-    let mut rng_state: u64 = 0x00da_5c1e_ed;
+    let mut rng_state: u64 = 0x0000_da5c_1eed;
     let mut jitter = |cfg: &TypingCfg| -> Duration {
         rng_state = rng_state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
         let unit = ((rng_state >> 33) as f64 / (1u64 << 31) as f64) * 2.0 - 1.0;

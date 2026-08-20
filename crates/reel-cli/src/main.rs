@@ -210,7 +210,9 @@ fn main() {
 fn run() -> Result<()> {
     match Cli::parse().command {
         Command::Render { file, out, template, budget, scale, aspect, size, no_audio, quiet } => {
-            pipeline::render(&file, out, template, budget, scale, aspect, size, no_audio, quiet)
+            let args =
+                pipeline::RenderArgs { out, template, budget, scale, aspect, size, no_audio, quiet };
+            pipeline::render(&file, args)
         }
         Command::Watch { file, out, template, serve } => watch::watch(&file, out, template, serve),
         Command::Run { file, no_render, quiet } => {
