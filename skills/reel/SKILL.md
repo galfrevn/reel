@@ -189,6 +189,21 @@ render.
   mine.toml` for a custom look; `reel template add owner/repo` installs a
   pack from GitHub.
 
+## Script mode (no human needed)
+
+For demos of *non-interactive or promptable* programs, skip recording:
+write a script-mode .reel (no `[source]`) with `run "cmd"`, `type`,
+`enter`/`key`, `wait_text "…" timeout Ns`, `wait_idle Ns`, `sleep` — then
+`reel run demo.reel` captures and renders in one step. Prefer `wait_text`
+over sleeps: it reacts the moment the screen changes and never over-waits.
+Edit ops (trim/speed/caption/…) in the same file apply to the capture.
+
+`reel suggest session.cast --write demo.reel` drafts the edit script from
+any recording (trims, speed ramps over dead air) — start there, then tune.
+
+If the render warns about possible secrets on screen (emails, tokens,
+ids), add `redact "pattern"` ops before sharing the output.
+
 ## Current limits (don't promise these)
 
 - reel renders with the machine's installed fonts (`[style] font` accepts
@@ -197,6 +212,4 @@ render.
   Font) and re-render; no re-recording needed.
 - Outputs: `.gif`, `.webm`, `.png` (via `shot`), `.txt`. MP4 is deliberately
   unsupported (licensing); offer WebM instead.
-- reel cannot type into or drive a program (no script mode); it only edits
-  existing recordings.
 - Windows support is best-effort and untested.
