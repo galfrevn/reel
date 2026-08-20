@@ -79,7 +79,12 @@ pub fn scan_sensitive(snapshots: &[Snapshot], cap: usize) -> Vec<(String, String
             for (kind, re) in &regs {
                 if let Some(m) = re.find(text) {
                     let sample = m.as_str().chars().take(48).collect::<String>();
-                    if !found.iter().any(|(_, s)| s == &sample) {
+                    // One finding per secret: skip when it overlaps another
+                    // (the id inside an already-flagged URL, say).
+                    let dup = found
+                        .iter()
+                        .any(|(_, s)| s.contains(&sample) || sample.contains(s.as_str()));
+                    if !dup {
                         found.push((kind.to_string(), sample));
                         if found.len() >= cap {
                             return found;
