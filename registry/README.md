@@ -45,7 +45,10 @@ exact index entry to add manually.
 The equivalent by hand:
 
 1. Put one or more TOML files in a `templates/` (or `sounds/`) directory at
-   the root of a public GitHub repo. Declare `schema = 1`.
+   the root of a public GitHub repo. Declare `schema = 2` for templates
+   (`schema = 1` for sounds). Packs carry TOML only: templates that
+   reference image files (wallpaper canvases, badge logos) work locally but
+   can't be published — gradients, grain, and text badges can.
 2. Check it locally: `reel template try templates/my-look.toml`, or
    `reel audio try sounds/my-sound.toml`.
 3. Open a PR against `index.json` adding your pack entry: repo, a one-line

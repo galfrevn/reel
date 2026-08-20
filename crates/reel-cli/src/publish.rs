@@ -56,8 +56,20 @@ pub fn publish(file: &Path, tags: &[String], no_pr: bool, no_preview: bool) -> R
     let text = std::fs::read_to_string(file)
         .with_context(|| format!("reading {}", file.display()))?;
     let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("template");
-    let mut t = template::from_toml(&text, stem)
+    let mut t = template::from_toml_at(&text, stem, file.parent())
         .map_err(|e| anyhow!("invalid template: {e}"))?;
+    // Registry packs hold single TOML files; a template that leans on image
+    // files next to it would install broken everywhere else.
+    let images = template::referenced_images(&t);
+    if !images.is_empty() {
+        bail!(
+            "{} references image files ({}) — the registry can't carry image \
+             assets yet, so image canvases and badge logos aren't publishable. \
+             Gradients, grain, and text badges are.",
+            file.display(),
+            images.join(", ")
+        );
+    }
     if !text.lines().any(|l| l.trim_start().starts_with("schema")) {
         bail!(
             "add `schema = {}` at the top of {} — published templates must \

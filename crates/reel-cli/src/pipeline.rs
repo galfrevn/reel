@@ -5,7 +5,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use reel_cast::{Cast, EventKind, ReelMeta};
 use reel_encode::{GifOptions, PaletteMode, RgbaFrame, WebmOptions};
 use reel_format::{parse_budget, ReelConfig, ReelFile, TimeExpr};
-use reel_render::{pixmap_to_rgba, plan_with, settings_from_config, Renderer};
+use reel_render::{pixmap_to_rgba, plan_frames, settings_from_config, Renderer};
 use reel_term::Snapshot;
 use reel_timeline::{AudioOp, Timeline, VisualOp};
 use std::path::{Path, PathBuf};
@@ -133,11 +133,11 @@ fn uniform_dims(snaps: &[Snapshot]) -> bool {
 fn render_frames(loaded: &Loaded, cfg: &ReelConfig, quiet: bool) -> Result<(Vec<RgbaFrame>, Vec<String>)> {
     let (settings, mut warnings) = settings_from_config(cfg)?;
     let fps = settings.fps;
-    let settings_cursor_blink = settings.cursor_blink;
+    let plan_opts = settings.plan_options();
     let (mut renderer, font_warnings) = Renderer::new(settings)?;
     renderer.fit_exact(loaded.cast.cols(), loaded.cast.rows());
     warnings.extend(font_warnings);
-    let frames = plan_with(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps, settings_cursor_blink);
+    let frames = plan_frames(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps, &plan_opts);
     if !quiet {
         eprintln!(
             "rendering {} frames ({:.1}s output from {:.1}s recording)…",
@@ -265,13 +265,13 @@ fn render_apng(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
     }
     let (settings, warns) = settings_from_config(&cfg)?;
     let fps = settings.fps;
-    let blink = settings.cursor_blink;
+    let plan_opts = settings.plan_options();
     let (mut renderer, font_warns) = Renderer::new(settings)?;
     renderer.fit_exact(loaded.cast.cols(), loaded.cast.rows());
     print_warnings(&warns, quiet);
     print_warnings(&font_warns, quiet);
 
-    let plans = plan_with(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps, blink);
+    let plans = plan_frames(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps, &plan_opts);
     if !quiet {
         eprintln!(
             "rendering {} frames ({:.1}s output from {:.1}s recording)…",
@@ -522,7 +522,7 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
         step_cfg.output.scale = *scale;
         let (settings, warns) = settings_from_config(&step_cfg)?;
         let fps_used = settings.fps;
-        let blink = settings.cursor_blink;
+        let plan_opts = settings.plan_options();
         // One renderer across rungs keeps the glyph cache warm.
         let font_warns = match renderer.as_mut() {
             Some(r) => r.set_settings(settings)?,
@@ -538,7 +538,7 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
         }
         let r = renderer.as_mut().unwrap();
         r.fit_exact(loaded.cast.cols(), loaded.cast.rows());
-        let plans = plan_with(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps_used, blink);
+        let plans = plan_frames(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps_used, &plan_opts);
         if i == 0 && !quiet {
             eprintln!(
                 "rendering {} frames ({:.1}s output from {:.1}s recording)…",
@@ -622,10 +622,10 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
 
     if !quiet {
         if let Ok((settings, _)) = settings_from_config(&cfg) {
-            let gradient =
-                matches!(settings.template.canvas, reel_render::template::CanvasBg::Linear { .. });
+            use reel_render::template::CanvasBg;
+            let gradient = !matches!(settings.template.canvas, CanvasBg::Solid(_));
             if gradient || settings.template.crt.is_some() {
-                let why = if gradient { "a gradient canvas" } else { "glow effects" };
+                let why = if gradient { "a gradient or image canvas" } else { "glow effects" };
                 eprintln!(
                     "note: template `{}` uses {why}, which pushes GIF output past \
                      the lossless 256-color palette — sizes grow and colors quantize. \
@@ -670,7 +670,7 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
         step_cfg.output.scale = *scale;
         let (settings, warns) = settings_from_config(&step_cfg)?;
         let fps_used = settings.fps;
-        let blink = settings.cursor_blink;
+        let plan_opts = settings.plan_options();
         let font_warns = match renderer.as_mut() {
             Some(r) => r.set_settings(settings)?,
             None => {
@@ -685,7 +685,7 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
         }
         let r = renderer.as_mut().unwrap();
         r.fit_exact(loaded.cast.cols(), loaded.cast.rows());
-        let plans = plan_with(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps_used, blink);
+        let plans = plan_frames(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps_used, &plan_opts);
         if i == 0 && !quiet {
             eprintln!(
                 "rendering {} frames ({:.1}s output from {:.1}s recording)…",
@@ -768,10 +768,10 @@ pub fn shot(path: &Path, at: &str, out: Option<PathBuf>, template: Option<String
     let cfg = loaded.file.config.clone();
     let (settings, _) = settings_from_config(&cfg)?;
     let fps = settings.fps;
-    let settings_cursor_blink = settings.cursor_blink;
+    let plan_opts = settings.plan_options();
     let (mut renderer, _) = Renderer::new(settings)?;
     renderer.fit_exact(loaded.cast.cols(), loaded.cast.rows());
-    let frames = plan_with(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps, settings_cursor_blink);
+    let frames = plan_frames(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps, &plan_opts);
     let frame = frames
         .iter()
         .rev()
@@ -885,7 +885,7 @@ pub fn render_for_watch(
 
     let (settings, _) = settings_from_config(&file.config)?;
     let fps = settings.fps;
-    let watch_blink = settings.cursor_blink;
+    let plan_opts = settings.plan_options();
     match cache.renderer.as_mut() {
         Some(r) => {
             r.set_settings(settings)?;
@@ -894,7 +894,7 @@ pub fn render_for_watch(
     }
     let renderer = cache.renderer.as_mut().unwrap();
 
-    let frames = plan_with(&timeline, snapshots, &program.visuals, fps, watch_blink);
+    let frames = plan_frames(&timeline, snapshots, &program.visuals, fps, &plan_opts);
     let mut rgba = Vec::with_capacity(frames.len());
     for f in &frames {
         let pix = renderer.render_frame(&snapshots[f.snapshot], f);

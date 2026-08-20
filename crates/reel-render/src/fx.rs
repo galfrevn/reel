@@ -70,7 +70,7 @@ fn glow(pix: &mut Pixmap, amount: f32, scale: f32) {
     }
 }
 
-fn box_blur_h(src: &[f32], dst: &mut [f32], w: usize, h: usize, r: usize) {
+pub(crate) fn box_blur_h(src: &[f32], dst: &mut [f32], w: usize, h: usize, r: usize) {
     let norm = 1.0 / (2 * r + 1) as f32;
     for y in 0..h {
         for c in 0..3 {
@@ -87,7 +87,7 @@ fn box_blur_h(src: &[f32], dst: &mut [f32], w: usize, h: usize, r: usize) {
     }
 }
 
-fn box_blur_v(src: &[f32], dst: &mut [f32], w: usize, h: usize, r: usize) {
+pub(crate) fn box_blur_v(src: &[f32], dst: &mut [f32], w: usize, h: usize, r: usize) {
     let norm = 1.0 / (2 * r + 1) as f32;
     for x in 0..w {
         for c in 0..3 {
@@ -99,6 +99,49 @@ fn box_blur_v(src: &[f32], dst: &mut [f32], w: usize, h: usize, r: usize) {
                 let out = y.saturating_sub(r);
                 let inn = (y + r + 1).min(h - 1);
                 acc += col(inn) - col(out);
+            }
+        }
+    }
+}
+
+/// Additive glow for freshly typed cells: each rect gets three expanding
+/// soft halos whose alpha decays with `intensity` (0..1). Cheap enough to
+/// run per animation tick without a blur pass.
+pub fn glow_cells(
+    pix: &mut Pixmap,
+    cells: &[(f32, f32, f32, f32, crate::theme::Rgba)],
+    intensity: f32,
+) {
+    if intensity <= 0.0 {
+        return;
+    }
+    let (pw, ph) = (pix.width() as i32, pix.height() as i32);
+    let data = pix.pixels_mut();
+    for &(x, y, w, h, color) in cells {
+        // Halo layers: (expansion as a fraction of cell height, alpha share).
+        for (grow, share) in [(0.12f32, 0.55f32), (0.4, 0.28), (0.85, 0.13)] {
+            let e = h * grow;
+            let x0 = ((x - e).floor() as i32).max(0);
+            let y0 = ((y - e).floor() as i32).max(0);
+            let x1 = (((x + w) + e).ceil() as i32).min(pw);
+            let y1 = (((y + h) + e).ceil() as i32).min(ph);
+            let add = intensity * share;
+            for yy in y0..y1 {
+                let row = yy as usize * pw as usize;
+                for xx in x0..x1 {
+                    let p = &mut data[row + xx as usize];
+                    let a = p.alpha();
+                    let mix = |base: u8, c: u8| {
+                        ((base as f32 + c as f32 * add).min(a as f32)) as u8
+                    };
+                    *p = PremultipliedColorU8::from_rgba(
+                        mix(p.red(), color.r),
+                        mix(p.green(), color.g),
+                        mix(p.blue(), color.b),
+                        a,
+                    )
+                    .unwrap_or(*p);
+                }
             }
         }
     }
