@@ -59,13 +59,16 @@ fn load(path: &Path, template_override: Option<String>, quiet: bool) -> Result<L
     let cast = Cast::load(&cast_path)
         .with_context(|| format!("loading cast {}", cast_path.display()))?;
 
-    let snapshots = reel_term::replay(&cast)?;
+    let mut snapshots = reel_term::replay(&cast)?;
     if !uniform_dims(&snapshots) {
         bail!(
             "this cast resizes mid-session, which reel can't render yet — \
              re-record at a fixed size"
         );
     }
+    // Rebuild letter-by-letter typing from the recorded keys: TUIs batch
+    // their repaints; the demo shouldn't.
+    reel_term::smooth_typing(&mut snapshots, &printable_keys(&cast, &cast_path));
 
     let program = file.resolve(cast.duration())?;
     let (timeline, warnings) = Timeline::compile(&program.edits, cast.duration())?;
@@ -230,6 +233,32 @@ fn build_audio(
     }
     let samples = reel_audio::mix(&plan.events, timeline.out_duration(), audio.volume);
     Ok(Some(samples))
+}
+
+/// Printable keypresses for typing reconstruction, in source time.
+fn printable_keys(cast: &Cast, cast_path: &Path) -> Vec<reel_term::KeyPress> {
+    let raw: Vec<(f64, String)> = match ReelMeta::load_sidecar(cast_path) {
+        Some(meta) if !meta.input_events.is_empty() => meta
+            .input_events
+            .into_iter()
+            .filter(|e| e.kind == "key")
+            .map(|e| (e.t, e.value))
+            .collect(),
+        _ => cast
+            .events
+            .iter()
+            .filter(|e| e.kind == EventKind::Input)
+            .map(|e| (e.time, e.data.clone()))
+            .collect(),
+    };
+    raw.iter()
+        .flat_map(|(t, v)| {
+            v.chars()
+                .filter(|c| !c.is_control())
+                .map(|ch| reel_term::KeyPress { t: *t, ch })
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// Keystrokes for the audio planner: the `.reelmeta` sidecar when `reel
@@ -596,10 +625,11 @@ pub fn render_for_watch(
     if !reuse {
         let cast = Cast::load(&cast_path)
             .with_context(|| format!("loading cast {}", cast_path.display()))?;
-        let snapshots = reel_term::replay(&cast)?;
+        let mut snapshots = reel_term::replay(&cast)?;
         if !uniform_dims(&snapshots) {
             bail!("this cast resizes mid-session, which reel can't render yet");
         }
+        reel_term::smooth_typing(&mut snapshots, &printable_keys(&cast, &cast_path));
         cache.cast = Some((cast_path.clone(), mtime, cast, snapshots));
     }
     let (_, _, cast, snapshots) = cache.cast.as_ref().unwrap();

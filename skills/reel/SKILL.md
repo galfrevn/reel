@@ -41,8 +41,11 @@ reel record -o session.cast -- <the command to demo>
 ```
 
 Recording in the user's own terminal inherits its size, so the demo's
-geometry matches what they see daily; `--size 120x40` pins the PTY when
-recording headlessly or targeting specific dimensions.
+geometry matches what they see daily; `--size 220x54` pins the PTY when
+recording headlessly or targeting specific dimensions (wide sizes reveal
+TUI sidebars). Batched echoes are repaired automatically: reel rebuilds
+letter-by-letter typing from the recorded keystroke times, so typing
+always renders one character per key, synced with keyboard audio.
 
 This also writes a `session.cast.reelmeta` sidecar with timestamped
 keystrokes — keep the two files together; the sidecar is what makes

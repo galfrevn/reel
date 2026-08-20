@@ -10,6 +10,9 @@
 //!    are folded into one snapshot, and synchronized-output (`?2026`) blocks
 //!    are atomic because the parser buffers them until ESU.
 
+pub mod typing;
+pub use typing::{smooth_typing, KeyPress};
+
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::Point;
