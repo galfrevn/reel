@@ -52,8 +52,8 @@ def builtins(reel):
     return out
 
 
-def fetch_template(repo, name):
-    url = f"https://raw.githubusercontent.com/{repo}/HEAD/templates/{name}.toml"
+def fetch_pack_file(repo, dirname, name):
+    url = f"https://raw.githubusercontent.com/{repo}/HEAD/{dirname}/{name}.toml"
     with urllib.request.urlopen(url, timeout=30) as r:
         return r.read().decode()
 
@@ -66,6 +66,18 @@ CARD = """\
     <h3>{name}</h3>
     <p>{desc}</p>
     {tags}
+    <button class="install" data-cmd="{cmd}" onclick="copy(this)"><code>{cmd}</code></button>
+  </div>
+</article>
+"""
+
+SOUND_CARD = """\
+<article class="card">
+  <div class="meta">
+    <h3>{name}</h3>
+    <p>{desc}</p>
+    {tags}
+    <audio controls preload="none" src="sounds/{slug}.wav"></audio>
     <button class="install" data-cmd="{cmd}" onclick="copy(this)"><code>{cmd}</code></button>
   </div>
 </article>
@@ -117,6 +129,7 @@ PAGE = """\
                   color: var(--accent); }}
   .install:hover {{ border-color: var(--accent); }}
   .install.copied code {{ color: var(--fg); }}
+  .card audio {{ display: block; width: 100%; margin-bottom: 0.7rem; }}
   footer {{ margin-top: 4rem; color: var(--dim); font-size: 0.85rem; }}
   footer a {{ color: var(--accent); }}
 </style>
@@ -184,18 +197,20 @@ def main():
         '<h2>Built into reel</h2><div class="grid">' + "".join(cards) + "</div>"
     )
 
+    def pack_file(repo, dirname, name):
+        if repo == args.self_repo:
+            return (REPO_ROOT / dirname / f"{name}.toml").read_text()
+        return fetch_pack_file(repo, dirname, name)
+
     index = json.loads(INDEX.read_text())
     for pack in index["packs"]:
         repo = pack["repo"]
         cards = []
-        for entry in pack["templates"]:
+        for entry in pack.get("templates", []):
             name = entry["name"]
             slug = f'{repo.replace("/", "-")}-{name}'
             try:
-                if repo == args.self_repo:
-                    text = (REPO_ROOT / "templates" / f"{name}.toml").read_text()
-                else:
-                    text = fetch_template(repo, name)
+                text = pack_file(repo, "templates", name)
                 with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
                     f.write(text)
                     tmp = f.name
@@ -208,6 +223,30 @@ def main():
                 card(slug, name, entry.get("description", ""), entry.get("tags", []),
                      f"reel template add {repo}/{name}")
             )
+        for entry in pack.get("sounds", []):
+            name = entry["name"]
+            slug = f'{repo.replace("/", "-")}-{name}'
+            try:
+                text = pack_file(repo, "sounds", name)
+                with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
+                    f.write(text)
+                    tmp = f.name
+                (out / "sounds").mkdir(exist_ok=True)
+                print(f"synthesizing {repo}/{name}…", flush=True)
+                run(args.reel, ["audio", "try", tmp, "--out", str(out / "sounds" / f"{slug}.wav")])
+            except Exception as e:  # noqa: BLE001
+                print(f"warning: skipping sound {repo}/{name}: {e}", file=sys.stderr)
+                continue
+            tag_html = ""
+            if entry.get("tags"):
+                chips = "".join(f'<span class="tag">{html.escape(t)}</span>' for t in entry["tags"])
+                tag_html = f'<div class="tags">{chips}</div>'
+            cmd = f"reel audio add {repo}/{name}"
+            cards.append(SOUND_CARD.format(
+                slug=slug, name=html.escape(name),
+                desc=html.escape(entry.get("description", "")),
+                tags=tag_html, cmd=html.escape(cmd),
+            ))
         if cards:
             title = f'{html.escape(repo)} <span>— {html.escape(pack.get("description", ""))}</span>'
             sections.append(f'<h2>{title}</h2><div class="grid">' + "".join(cards) + "</div>")

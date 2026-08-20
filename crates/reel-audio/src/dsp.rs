@@ -207,7 +207,7 @@ fn shimmer_tail(shimmer: Option<Shimmer>) -> usize {
 /// Renders a full recipe to mono samples. `pitch` scales every frequency
 /// (1.0 = as written); `gain` scales the result; `seed` drives the noise so
 /// two renders of the same event are bit-identical.
-pub fn render_recipe(recipe: Recipe, pitch: f32, gain: f32, seed: u64) -> Vec<f32> {
+pub fn render_recipe(recipe: &Recipe, pitch: f32, gain: f32, seed: u64) -> Vec<f32> {
     let sr = SAMPLE_RATE as f32;
     let source_len = recipe
         .layers
@@ -224,7 +224,7 @@ pub fn render_recipe(recipe: Recipe, pitch: f32, gain: f32, seed: u64) -> Vec<f3
 
     let mut dry = vec![0f32; source_len];
     let mut rng = Pcg32::new(seed);
-    for layer in recipe.layers {
+    for layer in recipe.layers.iter() {
         match layer {
             Layer::Tone(t) => render_tone(&mut dry, t, pitch),
             Layer::Noise(n) => render_noise(&mut dry, n, pitch, &mut rng),
@@ -268,23 +268,23 @@ mod tests {
     #[test]
     fn render_is_deterministic() {
         let r = recipe("tick").unwrap();
-        let a = render_recipe(r, 1.0, 1.0, 42);
-        let b = render_recipe(r, 1.0, 1.0, 42);
+        let a = render_recipe(&r, 1.0, 1.0, 42);
+        let b = render_recipe(&r, 1.0, 1.0, 42);
         assert_eq!(a, b);
     }
 
     #[test]
     fn different_seeds_differ_for_noise() {
         let r = recipe("press").unwrap();
-        let a = render_recipe(r, 1.0, 1.0, 1);
-        let b = render_recipe(r, 1.0, 1.0, 2);
+        let a = render_recipe(&r, 1.0, 1.0, 1);
+        let b = render_recipe(&r, 1.0, 1.0, 2);
         assert_ne!(a, b);
     }
 
     #[test]
     fn shimmer_extends_the_tail() {
-        let plain = render_recipe(recipe("press").unwrap(), 1.0, 1.0, 0);
-        let shimmered = render_recipe(recipe("chime").unwrap(), 1.0, 1.0, 0);
+        let plain = render_recipe(&recipe("press").unwrap(), 1.0, 1.0, 0);
+        let shimmered = render_recipe(&recipe("chime").unwrap(), 1.0, 1.0, 0);
         // chime's source is ~0.35s; its shimmer tail pushes well past that.
         assert!(shimmered.len() as f32 / (SAMPLE_RATE as f32) > 0.8);
         assert!(plain.len() as f32 / (SAMPLE_RATE as f32) < 0.1);
@@ -293,7 +293,7 @@ mod tests {
     #[test]
     fn output_is_audible_but_not_clipping() {
         for name in crate::recipes::recipe_names() {
-            let samples = render_recipe(recipe(name).unwrap(), 1.0, 1.0, 7);
+            let samples = render_recipe(&recipe(name).unwrap(), 1.0, 1.0, 7);
             let peak = samples.iter().fold(0f32, |m, s| m.max(s.abs()));
             assert!(peak > 0.01, "`{name}` is inaudible (peak {peak})");
             assert!(peak < 1.0, "`{name}` clips (peak {peak})");
@@ -303,8 +303,8 @@ mod tests {
     #[test]
     fn pitch_shifts_the_spectrum() {
         let r = recipe("chime").unwrap();
-        let lo = render_recipe(r, 0.5, 1.0, 0);
-        let hi = render_recipe(r, 2.0, 1.0, 0);
+        let lo = render_recipe(&r, 0.5, 1.0, 0);
+        let hi = render_recipe(&r, 2.0, 1.0, 0);
         // Rough spectral proxy: zero crossings per second.
         let crossings = |s: &[f32]| s.windows(2).filter(|w| w[0].signum() != w[1].signum()).count();
         assert!(crossings(&hi) > crossings(&lo) * 2);

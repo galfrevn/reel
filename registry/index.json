@@ -32,6 +32,16 @@
             "warm"
           ]
         }
+      ],
+      "sounds": [
+        {
+          "name": "laser",
+          "description": "A quick descending zap \u2014 deletions, dismissals, misses",
+          "tags": [
+            "ui",
+            "zap"
+          ]
+        }
       ]
     }
   ]

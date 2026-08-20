@@ -1,6 +1,6 @@
 ---
 name: reel
-description: Turn terminal recordings into polished, shareable demos using the reel CLI — record a session once (reel record or asciinema), then edit it like video (trim dead air, cut mistakes, speed-ramp slow parts, zoom, caption) and render a styled, size-budgeted GIF, or a WebM with procedurally synthesized sound, without ever re-running the program. Also covers reel's community template registry — searching, previewing, installing, and publishing terminal looks. Use this skill whenever the user wants a demo of their CLI or TUI, a GIF for a README, launch tweet, or docs, wants to shorten/clean up/restyle a terminal recording, mentions asciinema or .cast files, asks to "record my terminal" or "make a demo" of a command-line tool, or wants to find, install, or share a terminal demo template — even if they never mention reel by name.
+description: Turn terminal recordings into polished, shareable demos using the reel CLI — record a session once (reel record or asciinema), then edit it like video (trim dead air, cut mistakes, speed-ramp slow parts, zoom, caption) and render a styled, size-budgeted GIF, or a WebM with procedurally synthesized sound, without ever re-running the program. Also covers reel's community registry — searching, previewing, installing, and publishing templates (terminal looks) and sound recipes. Use this skill whenever the user wants a demo of their CLI or TUI, a GIF for a README, launch tweet, or docs, wants to shorten/clean up/restyle a terminal recording, mentions asciinema or .cast files, asks to "record my terminal" or "make a demo" of a command-line tool, or wants to find, install, or share a demo template or sound — even if they never mention reel by name.
 ---
 
 # Making terminal demos with reel
@@ -206,6 +206,10 @@ the gallery match against — publish will refuse a template without a
 description. Write it for the person searching: name the mood and the
 destination ("warm light theme for daytime docs"), not the implementation.
 
+Templates are all-in-one: if the template references a theme the user
+imported locally, `publish` embeds the palette into the file as an inline
+`[theme]` table automatically, so installers see exactly the author's look.
+
 ## Audio (WebM only)
 
 Set the output to `.webm` and add an `[audio]` table to get sound — every
@@ -227,6 +231,15 @@ sparkle, droplet…); a wrong name fails with the full list of available
 recipes, so guess freely. `mute A..B` and `volume 0.15 from A to B` shape
 regions. Speeding a region up *drops* key sounds rather than pitch-shifting
 them. GIF output ignores audio silently.
+
+Sounds are an open set too, shared through the same registry as templates:
+`reel audio list` shows built-ins plus installed, `reel audio search zap`
+finds community recipes, `reel audio try <name|file>` synthesizes one to a
+WAV to audition, `reel audio add owner/repo/name` installs it (usable in
+`sound`, `thinking`, and `bed`). To craft one: `reel audio show chime >
+mine.toml`, tweak the tone/noise layers, `try` it, and `reel audio publish
+mine.toml --tag ui` opens the registry PR — same description/tag rules as
+templates.
 
 Rules of thumb: demos must read fine muted (GitHub/social autoplay silent);
 audio is polish, never information. Pass `--no-audio` to A/B a silent

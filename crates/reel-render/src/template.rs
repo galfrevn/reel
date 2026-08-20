@@ -47,6 +47,10 @@ pub struct Template {
     pub name: String,
     pub description: String,
     pub theme: String,
+    /// Palette embedded in the template file itself. When set it wins over
+    /// the `theme` name — this is what makes a published template
+    /// self-contained: installers don't need the author's theme installed.
+    pub theme_colors: Option<crate::theme::Theme>,
     /// Preferred font family name; `None` = the system monospace chain.
     pub font: Option<String>,
     pub font_size: f32,
@@ -78,6 +82,7 @@ pub fn builtin(name: &str) -> Option<Template> {
             name: "minimal".into(),
             description: "High contrast, square corners, no chrome noise".into(),
             theme: "reel-dark".into(),
+            theme_colors: None,
             font: None,
             font_size: 16.0,
             line_height: 1.35,
@@ -96,6 +101,7 @@ pub fn builtin(name: &str) -> Option<Template> {
             name: "glass".into(),
             description: "Soft gradient, rounded chrome, generous air".into(),
             theme: "catppuccin-mocha".into(),
+            theme_colors: None,
             font: None,
             font_size: 17.0,
             line_height: 1.45,
@@ -114,6 +120,7 @@ pub fn builtin(name: &str) -> Option<Template> {
             name: "classic".into(),
             description: "Bare terminal, no chrome — for purists and docs embeds".into(),
             theme: "reel-dark".into(),
+            theme_colors: None,
             font: None,
             font_size: 16.0,
             line_height: 1.3,
@@ -132,6 +139,7 @@ pub fn builtin(name: &str) -> Option<Template> {
             name: "geist".into(),
             description: "Pure black, Geist Mono, hairline border — deploy-preview energy".into(),
             theme: "geist-dark".into(),
+            theme_colors: None,
             font: Some("Geist Mono".into()),
             font_size: 15.0,
             line_height: 1.55,
@@ -150,6 +158,7 @@ pub fn builtin(name: &str) -> Option<Template> {
             name: "paper".into(),
             description: "Light background, for daytime documentation".into(),
             theme: "paper-light".into(),
+            theme_colors: None,
             font: None,
             font_size: 16.0,
             line_height: 1.4,
@@ -168,6 +177,7 @@ pub fn builtin(name: &str) -> Option<Template> {
             name: "crt".into(),
             description: "Phosphor glow, scanlines, vignette — the shareable one".into(),
             theme: "phosphor".into(),
+            theme_colors: None,
             font: None,
             font_size: 17.0,
             line_height: 1.3,
@@ -216,19 +226,22 @@ struct TemplateFile {
     schema: Option<u32>,
     name: Option<String>,
     description: Option<String>,
-    theme: Option<String>,
+    /// A theme name (`theme = "tokyo-night"`) or an inline palette table
+    /// (`[theme]` with fg/bg/cursor/ansi) — the latter makes the file
+    /// self-contained for publishing.
+    theme: Option<toml::Value>,
     /// Any installed font family name (resolved at render time).
     font: Option<String>,
-    font_size: Option<f32>,
-    line_height: Option<f32>,
+    font_size: Option<f64>,
+    line_height: Option<f64>,
     /// macos | rounded | plain | none
     window: Option<String>,
     /// none | traffic-lights | dots
     titlebar: Option<String>,
     titlebar_rule: Option<bool>,
-    corner_radius: Option<f32>,
-    padding: Option<f32>,
-    inset: Option<f32>,
+    corner_radius: Option<f64>,
+    padding: Option<f64>,
+    inset: Option<f64>,
     border: Option<String>,
     canvas: Option<CanvasFile>,
     shadow: Option<ShadowFile>,
@@ -245,7 +258,7 @@ struct CanvasFile {
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct GradientFile {
-    angle: f32,
+    angle: f64,
     from: String,
     to: String,
 }
@@ -253,17 +266,17 @@ struct GradientFile {
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct ShadowFile {
-    blur: f32,
-    opacity: f32,
-    offset_y: f32,
+    blur: f64,
+    opacity: f64,
+    offset_y: f64,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Default)]
 #[serde(deny_unknown_fields, default)]
 struct CrtFile {
-    scanline: f32,
-    glow: f32,
-    vignette: f32,
+    scanline: f64,
+    glow: f64,
+    vignette: f64,
 }
 
 /// Parses a user template TOML. Unset fields inherit from `minimal`.
@@ -289,17 +302,30 @@ pub fn from_toml(text: &str, fallback_name: &str) -> Result<Template, String> {
     t.crt = None;
     t.name = f.name.unwrap_or_else(|| fallback_name.to_string());
     t.description = f.description.unwrap_or_default();
-    if let Some(theme) = f.theme {
-        t.theme = theme;
+    match f.theme {
+        Some(toml::Value::String(name)) => t.theme = name,
+        Some(table @ toml::Value::Table(_)) => {
+            let inline = crate::theme::from_value(table, &t.name)
+                .map_err(|e| format!("inline [theme]: {e}"))?;
+            t.theme = inline.name.clone();
+            t.theme_colors = Some(inline);
+        }
+        Some(other) => {
+            return Err(format!(
+                "`theme` must be a name string or an inline palette table, got {}",
+                other.type_str()
+            ))
+        }
+        None => {}
     }
     if f.font.is_some() {
         t.font = f.font;
     }
     if let Some(v) = f.font_size {
-        t.font_size = v;
+        t.font_size = v as f32;
     }
     if let Some(v) = f.line_height {
-        t.line_height = v;
+        t.line_height = v as f32;
     }
     if let Some(w) = &f.window {
         t.window = parse_window_style(w).ok_or_else(|| format!("unknown window `{w}`"))?;
@@ -316,13 +342,13 @@ pub fn from_toml(text: &str, fallback_name: &str) -> Result<Template, String> {
         t.titlebar_rule = v;
     }
     if let Some(v) = f.corner_radius {
-        t.corner_radius = v;
+        t.corner_radius = v as f32;
     }
     if let Some(v) = f.padding {
-        t.padding = v;
+        t.padding = v as f32;
     }
     if let Some(v) = f.inset {
-        t.inset = v;
+        t.inset = v as f32;
     }
     let color = |s: &str| Rgba::from_hex(s).ok_or_else(|| format!("bad color `{s}`"));
     if let Some(b) = &f.border {
@@ -332,7 +358,7 @@ pub fn from_toml(text: &str, fallback_name: &str) -> Result<Template, String> {
         t.canvas = match (c.solid, c.gradient) {
             (Some(s), None) => CanvasBg::Solid(color(&s)?),
             (None, Some(g)) => CanvasBg::Linear {
-                angle_deg: g.angle,
+                angle_deg: g.angle as f32,
                 from: color(&g.from)?,
                 to: color(&g.to)?,
             },
@@ -340,10 +366,10 @@ pub fn from_toml(text: &str, fallback_name: &str) -> Result<Template, String> {
         };
     }
     if let Some(s) = f.shadow {
-        t.shadow = Some(Shadow { blur: s.blur, opacity: s.opacity, offset_y: s.offset_y });
+        t.shadow = Some(Shadow { blur: s.blur as f32, opacity: s.opacity as f32, offset_y: s.offset_y as f32 });
     }
     if let Some(c) = f.crt {
-        t.crt = Some(CrtEffect { scanline: c.scanline, glow: c.glow, vignette: c.vignette });
+        t.crt = Some(CrtEffect { scanline: c.scanline as f32, glow: c.glow as f32, vignette: c.vignette as f32 });
     }
     Ok(t)
 }
@@ -358,14 +384,19 @@ pub fn to_toml(t: &Template) -> String {
             format!("#{:02x}{:02x}{:02x}{:02x}", c.r, c.g, c.b, c.a)
         }
     };
+    // f32 -> f64 for TOML without float-expansion noise (1.35f32 would
+    // otherwise print as 1.350000023841858).
+    let clean = |v: f32| (f64::from(v) * 10_000.0).round() / 10_000.0;
     let f = TemplateFile {
         schema: Some(SCHEMA),
         name: Some(t.name.clone()),
         description: (!t.description.is_empty()).then(|| t.description.clone()),
-        theme: Some(t.theme.clone()),
+        // An inline palette is a TOML table, and tables must follow the
+        // scalar keys — so it's appended as a `[theme]` section below.
+        theme: t.theme_colors.is_none().then(|| toml::Value::String(t.theme.clone())),
         font: t.font.clone(),
-        font_size: Some(t.font_size),
-        line_height: Some(t.line_height),
+        font_size: Some(clean(t.font_size)),
+        line_height: Some(clean(t.line_height)),
         window: Some(
             match t.window {
                 WindowStyle::MacOs => "macos",
@@ -384,25 +415,30 @@ pub fn to_toml(t: &Template) -> String {
             .to_string(),
         ),
         titlebar_rule: Some(t.titlebar_rule),
-        corner_radius: Some(t.corner_radius),
-        padding: Some(t.padding),
-        inset: Some(t.inset),
+        corner_radius: Some(clean(t.corner_radius)),
+        padding: Some(clean(t.padding)),
+        inset: Some(clean(t.inset)),
         border: t.border.map(hex),
         canvas: Some(match t.canvas {
             CanvasBg::Solid(c) => CanvasFile { solid: Some(hex(c)), gradient: None },
             CanvasBg::Linear { angle_deg, from, to } => CanvasFile {
                 solid: None,
-                gradient: Some(GradientFile { angle: angle_deg, from: hex(from), to: hex(to) }),
+                gradient: Some(GradientFile { angle: clean(angle_deg), from: hex(from), to: hex(to) }),
             },
         }),
         shadow: t.shadow.as_ref().map(|s| ShadowFile {
-            blur: s.blur,
-            opacity: s.opacity,
-            offset_y: s.offset_y,
+            blur: clean(s.blur),
+            opacity: clean(s.opacity),
+            offset_y: clean(s.offset_y),
         }),
-        crt: t.crt.map(|c| CrtFile { scanline: c.scanline, glow: c.glow, vignette: c.vignette }),
+        crt: t.crt.map(|c| CrtFile { scanline: clean(c.scanline), glow: clean(c.glow), vignette: clean(c.vignette) }),
     };
-    toml::to_string_pretty(&f).expect("template serializes")
+    let mut out = toml::to_string_pretty(&f).expect("template serializes");
+    if let Some(colors) = &t.theme_colors {
+        out.push_str("\n[theme]\n");
+        out.push_str(&crate::theme::to_toml(colors));
+    }
+    out
 }
 
 /// Resolves a template name: built-ins first, then the user templates dir.
@@ -458,6 +494,40 @@ mod tests {
             assert_eq!(back.crt, t.crt, "{name} crt");
             assert_eq!(back.border, t.border);
         }
+    }
+
+    #[test]
+    fn inline_theme_parses_and_roundtrips() {
+        let toml = r##"
+description = "self-contained"
+
+[theme]
+name = "custom-glow"
+fg = "#e6e6eb"
+bg = "#101014"
+cursor = "#8ab4f8"
+ansi = [
+    "#111111", "#222222", "#333333", "#444444",
+    "#555555", "#666666", "#777777", "#888888",
+    "#999999", "#aaaaaa", "#bbbbbb", "#cccccc",
+    "#dddddd", "#eeeeee", "#ffffff", "#000000",
+]
+"##;
+        let t = from_toml(toml, "portable").unwrap();
+        let colors = t.theme_colors.as_ref().expect("inline palette");
+        assert_eq!(t.theme, "custom-glow");
+        assert_eq!(colors.bg, Rgba::rgb(0x10, 0x10, 0x14));
+
+        let back = from_toml(&to_toml(&t), "x").unwrap();
+        let back_colors = back.theme_colors.expect("palette survives roundtrip");
+        assert_eq!(back_colors.fg, colors.fg);
+        assert_eq!(back_colors.ansi, colors.ansi);
+    }
+
+    #[test]
+    fn theme_rejects_non_string_non_table() {
+        let err = from_toml("theme = 3\n", "x").unwrap_err();
+        assert!(err.contains("name string or an inline palette"), "got: {err}");
     }
 
     #[test]

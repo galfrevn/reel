@@ -63,7 +63,7 @@ pub struct KeyInput {
 }
 
 /// Planner configuration, mapped from the `.reel` `[audio]` table by the CLI.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PlanConfig {
     pub keyboard: Option<KeyboardProfile>,
     pub ui_sounds: bool,
@@ -71,6 +71,22 @@ pub struct PlanConfig {
     pub thinking: Option<String>,
     /// Ambient bed recipe looped softly under the whole demo; default off.
     pub bed: Option<String>,
+    /// Installed sounds (`reel audio add`), resolved by name after the
+    /// built-ins so a community sound can't silently shadow one.
+    pub custom: std::collections::HashMap<String, Recipe>,
+}
+
+/// Built-ins first, then installed sounds.
+fn resolve(name: &str, cfg: &PlanConfig) -> Option<Recipe> {
+    recipes::recipe(name).or_else(|| cfg.custom.get(name).cloned())
+}
+
+fn unknown_sound(name: &str, cfg: &PlanConfig) -> AudioError {
+    let mut names: Vec<String> =
+        recipes::recipe_names().iter().map(|s| s.to_string()).collect();
+    names.extend(cfg.custom.keys().cloned());
+    names.sort();
+    AudioError::UnknownSound(name.to_string(), names.join(", "))
 }
 
 #[derive(Debug)]
@@ -177,13 +193,14 @@ pub fn plan_events(
             let vol = volume_at(key.src_time);
             let pitch = profile.press_pitch * pitch_k * (1.0 + hp);
             let gain = profile.gain * gain_k * (1.0 + hg) * vol;
-            push(&mut events, t, "press", pitch, gain)?;
+            push(&mut events, cfg, t, "press", pitch, gain)?;
             if profile.click {
-                push(&mut events, t, "tick", pitch * 0.9, gain * 0.5)?;
+                push(&mut events, cfg, t, "tick", pitch * 0.9, gain * 0.5)?;
             }
             if profile.release {
                 push(
                     &mut events,
+                    cfg,
                     t + 0.055,
                     "release",
                     profile.release_pitch * pitch_k * (1.0 + hp),
@@ -211,18 +228,15 @@ pub fn plan_events(
                 continue;
             }
             last_cue = t;
-            push(&mut events, t, "pulse", 1.0, 0.35 * volume_at(c.src_time))?;
+            push(&mut events, cfg, t, "pulse", 1.0, 0.35 * volume_at(c.src_time))?;
         }
     }
 
     // --- 3. Agent-thinking bed ----------------------------------------------
     if let Some(bed) = &cfg.thinking {
-        if recipes::recipe(bed).is_none() {
-            return Err(AudioError::UnknownSound(
-                bed.clone(),
-                recipes::recipe_names().join(", "),
-            ));
-        }
+        if resolve(bed, cfg).is_none() {
+            return Err(unknown_sound(bed, cfg));
+            }
         // Only gaps *between* changes count: a trailing still stretch never
         // "resolves", so it gets no bed (and is usually trimmed or frozen).
         let mut gap_start = 0.0f64;
@@ -236,13 +250,13 @@ pub fn plan_events(
                     let mut t = a + 0.4;
                     while t < b - 0.3 {
                         if !muted(timeline.sample(t)) {
-                            push(&mut events, t, bed, 1.0, 0.5 * volume_at(timeline.sample(t)))?;
+                            push(&mut events, cfg, t, bed, 1.0, 0.5 * volume_at(timeline.sample(t)))?;
                         }
                         t += THINKING_PULSE_EVERY;
                     }
                     // Resolve to a chime when output resumes.
                     if !muted(gap_end) {
-                        push(&mut events, b, "chime", 1.0, 0.4 * volume_at(gap_end))?;
+                        push(&mut events, cfg, b, "chime", 1.0, 0.4 * volume_at(gap_end))?;
                     }
                 }
             }
@@ -252,16 +266,13 @@ pub fn plan_events(
 
     // --- 4. Ambient bed -------------------------------------------------------
     if let Some(bed) = &cfg.bed {
-        if recipes::recipe(bed).is_none() {
-            return Err(AudioError::UnknownSound(
-                bed.clone(),
-                recipes::recipe_names().join(", "),
-            ));
-        }
+        if resolve(bed, cfg).is_none() {
+            return Err(unknown_sound(bed, cfg));
+            }
         let mut t = 0.0;
         while t < timeline.out_duration() {
             if !muted(timeline.sample(t)) {
-                push(&mut events, t, bed, 1.0, 0.25 * volume_at(timeline.sample(t)))?;
+                push(&mut events, cfg, t, bed, 1.0, 0.25 * volume_at(timeline.sample(t)))?;
             }
             t += 2.0;
         }
@@ -270,15 +281,12 @@ pub fn plan_events(
     // --- 5. Explicit `sound` ops ---------------------------------------------
     for op in ops {
         if let AudioOp::Sound { name, at } = op {
-            if recipes::recipe(name).is_none() {
-                return Err(AudioError::UnknownSound(
-                    name.clone(),
-                    recipes::recipe_names().join(", "),
-                ));
-            }
+            if resolve(name, cfg).is_none() {
+                return Err(unknown_sound(name, cfg));
+                }
             // The user asked for this one — snap through cuts, ignore mutes.
             let t = timeline.project_snapped(*at);
-            push(&mut events, t, name, 1.0, volume_at(*at))?;
+            push(&mut events, cfg, t, name, 1.0, volume_at(*at))?;
         }
     }
 
@@ -294,14 +302,13 @@ pub fn plan_events(
 
 fn push(
     events: &mut Vec<AudioEvent>,
+    cfg: &PlanConfig,
     t: f64,
     name: &str,
     pitch: f32,
     gain: f32,
 ) -> Result<(), AudioError> {
-    let recipe = recipes::recipe(name).ok_or_else(|| {
-        AudioError::UnknownSound(name.to_string(), recipes::recipe_names().join(", "))
-    })?;
+    let recipe = resolve(name, cfg).ok_or_else(|| unknown_sound(name, cfg))?;
     events.push(AudioEvent { t, name: name.to_string(), recipe, gain, pitch });
     Ok(())
 }
@@ -332,6 +339,7 @@ mod tests {
             ui_sounds: false,
             thinking: None,
             bed: None,
+            ..Default::default()
         }
     }
 
@@ -420,7 +428,7 @@ mod tests {
             // Idle then big change: cue.
             GridChange { src_time: 5.0, changed_cells: 300, total_cells: 1000, rows_touched: 10, cursor_advanced: false },
         ];
-        let cfg = PlanConfig { keyboard: None, ui_sounds: true, thinking: None, bed: None };
+        let cfg = PlanConfig { keyboard: None, ui_sounds: true, thinking: None, bed: None, ..Default::default() };
         let plan = plan_events(&tl, &[], &[], &changes, &cfg).unwrap();
         assert_eq!(plan.events.len(), 1);
         assert_eq!(plan.events[0].name, "pulse");
@@ -434,7 +442,7 @@ mod tests {
             GridChange { src_time: 1.0, changed_cells: 10, total_cells: 1000, rows_touched: 1, cursor_advanced: false },
             GridChange { src_time: 11.0, changed_cells: 10, total_cells: 1000, rows_touched: 1, cursor_advanced: false },
         ];
-        let cfg = PlanConfig { keyboard: None, ui_sounds: false, thinking: Some("soft-pulse".into()), bed: None };
+        let cfg = PlanConfig { keyboard: None, ui_sounds: false, thinking: Some("soft-pulse".into()), bed: None, ..Default::default() };
         let plan = plan_events(&tl, &[], &[], &changes, &cfg).unwrap();
         let pulses = plan.events.iter().filter(|e| e.name == "soft-pulse").count();
         assert!(pulses >= 5, "10s gap should pulse repeatedly, got {pulses}");
@@ -450,7 +458,7 @@ mod tests {
             GridChange { src_time: 1.0, changed_cells: 10, total_cells: 1000, rows_touched: 1, cursor_advanced: false },
             GridChange { src_time: 11.0, changed_cells: 10, total_cells: 1000, rows_touched: 1, cursor_advanced: false },
         ];
-        let cfg = PlanConfig { keyboard: None, ui_sounds: false, thinking: Some("soft-pulse".into()), bed: None };
+        let cfg = PlanConfig { keyboard: None, ui_sounds: false, thinking: Some("soft-pulse".into()), bed: None, ..Default::default() };
         let plan = plan_events(&tl, &[], &[], &changes, &cfg).unwrap();
         let pulses = plan.events.iter().filter(|e| e.name == "soft-pulse").count();
         assert!((1..=2).contains(&pulses), "2s output gap → 1-2 pulses, got {pulses}");

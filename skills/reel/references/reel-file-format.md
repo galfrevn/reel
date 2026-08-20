@@ -32,6 +32,9 @@ name = "glass"           # any name from `reel templates` (built-in or installed
 
 [style]                  # each key overrides the template's value
 theme       = "tokyo-night"   # any name from `reel themes` (built-in or imported)
+                              # (template .toml files may instead embed a full
+                              # palette as an inline [theme] table — that's how
+                              # published templates stay self-contained)
 font        = "Berkeley Mono"     # any installed font family; reel warns and falls back if missing
 font_size   = 18
 line_height = 1.4
@@ -126,7 +129,8 @@ Edit ops in the same file apply to the capture afterward.
 
 - `sound "name" at T` — place a one-shot (success, error, chime, sparkle,
   droplet, tick, …). An unknown name fails with the complete list of
-  available recipes, so there is no need to memorize it.
+  available recipes — built-ins plus anything installed with
+  `reel audio add` — so there is no need to memorize it.
 - `mute A..B` — drop every generated sound anchored in the source range.
 - `volume LEVEL from A to B` — scale generated sounds in the range (e.g.
   `volume 0.15 from 8s to 34s` under a sped-up thinking pause).
@@ -186,6 +190,13 @@ reel template publish FILE [--tag T]…  # validate + preview + open the registr
 reel themes                            # list built-in + imported themes
 reel theme import FILE [--name N]      # base16 YAML, Alacritty, iTerm2 .itermcolors
 reel theme import --from iterm|kitty|ghostty   # straight from the user's terminal config
+
+reel audio list                        # built-in + installed sounds (alias: reel sounds)
+reel audio show NAME                   # print a recipe's TOML (starting point for custom sounds)
+reel audio try SOURCE [-o out.wav]     # synthesize a name or .toml to a WAV and audition it
+reel audio add SOURCE                  # install a .toml or a GitHub pack (owner/repo[/name])
+reel audio search [QUERY]              # search the community sound registry
+reel audio publish FILE [--tag T]…     # validate + audition + open the registry PR (via gh)
 ```
 
 `reel render session.cast` (a bare cast, no `.reel`) renders with default

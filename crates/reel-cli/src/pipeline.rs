@@ -381,6 +381,7 @@ fn build_audio(
         ui_sounds: audio.ui_sounds,
         thinking,
         bed,
+        custom: crate::audio::installed_sounds(),
     };
     let keys = key_inputs(cast, cast_path);
     let changes = grid_changes(snapshots);

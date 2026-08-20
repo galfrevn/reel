@@ -1,4 +1,6 @@
+mod audio;
 mod net;
+mod packs;
 mod pipeline;
 mod publish;
 mod queries;
@@ -137,6 +139,51 @@ enum Command {
         #[command(subcommand)]
         action: ThemeAction,
     },
+    /// List available sounds (alias for `audio list`)
+    Sounds,
+    /// Manage sound recipes
+    Audio {
+        #[command(subcommand)]
+        action: AudioAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum AudioAction {
+    /// List built-in and installed sounds
+    List,
+    /// Print a sound as TOML (a starting point for your own)
+    Show { name: String },
+    /// Synthesize a sound to a WAV and open it
+    Try {
+        /// A sound name, a local .toml file, or an installed sound
+        source: String,
+        /// Write the WAV here instead of opening it
+        #[arg(long, short)]
+        out: Option<PathBuf>,
+    },
+    /// Install sounds from a .toml file or a GitHub pack (owner/repo[/name])
+    Add { source: String },
+    /// Search the community sound registry
+    Search {
+        /// Match against names, descriptions, tags, and repos; empty lists all
+        query: Option<String>,
+    },
+    /// Publish a sound to the community registry (validate → audition →
+    /// scaffold → PR via gh)
+    Publish {
+        /// The sound .toml to publish
+        file: PathBuf,
+        /// Tags shown in search and the gallery (repeatable)
+        #[arg(long)]
+        tag: Vec<String>,
+        /// Stop after scaffolding; print the index entry instead of a PR
+        #[arg(long)]
+        no_pr: bool,
+        /// Skip auditioning the sound locally
+        #[arg(long)]
+        no_preview: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -246,7 +293,7 @@ fn run() -> Result<()> {
         Command::Template { action: TemplateAction::Show { name } } => templates::show(&name),
         Command::Template { action: TemplateAction::Add { source } } => templates::add(&source),
         Command::Template { action: TemplateAction::Search { query } } => {
-            registry::search(query.as_deref())
+            registry::search(registry::Kind::Template, query.as_deref())
         }
         Command::Template { action: TemplateAction::Try { source } } => {
             templates::try_template(&source)
@@ -263,6 +310,21 @@ fn run() -> Result<()> {
             (None, Some(t)) => themes::import_from_terminal(&t, name),
             _ => bail!("pass a theme file or --from iterm|kitty|ghostty"),
         },
+        Command::Sounds | Command::Audio { action: AudioAction::List } => {
+            audio::list();
+            Ok(())
+        }
+        Command::Audio { action: AudioAction::Show { name } } => audio::show(&name),
+        Command::Audio { action: AudioAction::Try { source, out } } => {
+            audio::try_sound(&source, out)
+        }
+        Command::Audio { action: AudioAction::Add { source } } => audio::add(&source),
+        Command::Audio { action: AudioAction::Search { query } } => {
+            registry::search(registry::Kind::Sound, query.as_deref())
+        }
+        Command::Audio { action: AudioAction::Publish { file, tag, no_pr, no_preview } } => {
+            publish::publish_sound(&file, &tag, no_pr, no_preview)
+        }
     }
 }
 

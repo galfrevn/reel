@@ -21,7 +21,7 @@ pub fn mix(events: &[AudioEvent], duration_s: f64, master_volume: f32) -> Vec<f3
         // Seed from the event's index and anchor so noise is stable across
         // runs but distinct across events.
         let seed = (i as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ ev.t.to_bits();
-        let samples = render_recipe(ev.recipe, ev.pitch, ev.gain * master_volume, seed);
+        let samples = render_recipe(&ev.recipe, ev.pitch, ev.gain * master_volume, seed);
         let start = (ev.t * SAMPLE_RATE as f64).round() as i64;
         for (j, s) in samples.iter().enumerate() {
             let idx = start + j as i64;

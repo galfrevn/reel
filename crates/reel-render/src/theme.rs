@@ -176,6 +176,13 @@ pub fn theme_names() -> &'static [&'static str] {
 
 /// Parses reel's native theme TOML (`fg`/`bg`/`cursor` + 16 `ansi` colors).
 pub fn from_toml(text: &str, fallback_name: &str) -> Result<Theme, String> {
+    let value: toml::Value = toml::from_str(text).map_err(|e| e.to_string())?;
+    from_value(value, fallback_name)
+}
+
+/// Parses a theme from an already-parsed TOML value — the same shape as a
+/// standalone theme file, which is how templates embed a palette inline.
+pub fn from_value(value: toml::Value, fallback_name: &str) -> Result<Theme, String> {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct ThemeFile {
@@ -185,7 +192,7 @@ pub fn from_toml(text: &str, fallback_name: &str) -> Result<Theme, String> {
         cursor: Option<String>,
         ansi: Vec<String>,
     }
-    let f: ThemeFile = toml::from_str(text).map_err(|e| e.to_string())?;
+    let f: ThemeFile = value.try_into().map_err(|e: toml::de::Error| e.to_string())?;
     if f.ansi.len() != 16 {
         return Err(format!("`ansi` needs exactly 16 colors, got {}", f.ansi.len()));
     }
@@ -204,6 +211,18 @@ pub fn from_toml(text: &str, fallback_name: &str) -> Result<Theme, String> {
         cursor: f.cursor.as_ref().map(&color).transpose()?.unwrap_or(fg),
         ansi,
     })
+}
+
+/// The theme as a TOML value — the shape templates embed under `[theme]`.
+pub fn to_value(t: &Theme) -> toml::Value {
+    let hex = |c: Rgba| toml::Value::String(format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b));
+    let mut table = toml::map::Map::new();
+    table.insert("name".into(), toml::Value::String(t.name.clone()));
+    table.insert("fg".into(), hex(t.fg));
+    table.insert("bg".into(), hex(t.bg));
+    table.insert("cursor".into(), hex(t.cursor));
+    table.insert("ansi".into(), toml::Value::Array(t.ansi.iter().map(|&c| hex(c)).collect()));
+    toml::Value::Table(table)
 }
 
 /// Serializes a theme as the native TOML format `from_toml` reads.

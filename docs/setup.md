@@ -94,8 +94,9 @@ reel watch FILE                # re-render on save; --serve for browser preview
 reel shot FILE --at T          # single frame PNG
 reel inspect FILE              # timeline summary: duration, size, where changes happen
 reel init [template]           # scaffold a .reel file
-reel template list|show|add    # templates, incl. installing packs from GitHub
+reel template list|show|add|search|try|publish   # looks, incl. the community registry
 reel theme list|import         # themes, incl. base16 / Alacritty / iTerm2 import
+reel audio list|show|try|add|search|publish      # sound recipes, same registry
 ```
 
 ## Templates and themes
@@ -127,6 +128,11 @@ reel theme import my-colors.itermcolors # base16 YAML, Alacritty, iTerm2
 `--template` also takes a `.toml` path directly anywhere a name works, and
 publishing your own pack is a PR — see [registry/README.md](../registry/README.md).
 
+Templates are all-in-one: a template can embed its full color palette as an
+inline `[theme]` table instead of referencing a theme by name, and `publish`
+embeds your imported theme automatically — whoever installs the template
+sees exactly your look, no separate theme install.
+
 Gradient backgrounds (like `glass`) cost GIF palette efficiency — under a
 tight `budget`, a solid-canvas template (`minimal`, `classic`, `geist`)
 degrades more gracefully.
@@ -146,6 +152,19 @@ everywhere:
 - Audio is an event list mixed *after* the timeline resolves: `speed 5x`
   drops keystrokes instead of pitch-shifting them, `cut` deletes their
   sounds, `mute`/`volume` shape regions.
+
+Sounds are shareable like templates. A recipe is a small TOML file (tone
+and noise layers with envelopes), and the same registry commands apply:
+
+```sh
+reel audio list                        # built-ins + installed
+reel audio show chime > mine.toml      # start from a built-in
+reel audio try mine.toml               # synthesize to a WAV and listen
+reel audio add mine.toml               # install; `sound "mine" at 3s` now works
+reel audio search zap                  # find community sounds
+reel audio add owner/repo/name         # install one from a pack
+reel audio publish mine.toml --tag ui  # validate → audition → registry PR
+```
 
 One rule: demos must work muted (GitHub and social feeds autoplay silent).
 Audio is polish, never information.

@@ -67,10 +67,11 @@ pub struct Shimmer {
     pub lowpass: f32,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Recipe {
     pub master_gain: f32,
-    pub layers: &'static [Layer],
+    /// Borrowed for the built-in table; owned for recipes loaded from TOML.
+    pub layers: std::borrow::Cow<'static, [Layer]>,
     pub shimmer: Option<Shimmer>,
 }
 
@@ -144,7 +145,11 @@ macro_rules! recipes {
                 $($name => {
                     // A const item promotes the layer array to 'static.
                     const LAYERS: &[Layer] = $layers;
-                    Some(Recipe { master_gain: $gain, layers: LAYERS, shimmer: $shimmer })
+                    Some(Recipe {
+                        master_gain: $gain,
+                        layers: std::borrow::Cow::Borrowed(LAYERS),
+                        shimmer: $shimmer,
+                    })
                 })+
                 _ => None,
             }

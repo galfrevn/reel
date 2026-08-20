@@ -1,0 +1,23 @@
+schema = 1
+name = "laser"
+description = "A quick descending zap — deletions, dismissals, misses"
+gain = 0.5
+
+[[layers]]
+kind = "tone"
+attack = 0.002
+decay = 0.12
+peak = 0.06
+waveform = "square"
+frequency = 1800
+glide_to = 300
+glide_time = 0.1
+
+[[layers]]
+kind = "noise"
+attack = 0.001
+decay = 0.03
+peak = 0.05
+filter = "highpass"
+frequency = 3000
+q = 1.2

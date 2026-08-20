@@ -34,6 +34,11 @@ pub fn templates_dir() -> Option<PathBuf> {
     config_dir().map(|d| d.join("templates"))
 }
 
+/// User-installed sound recipes (`reel audio add`).
+pub fn sounds_dir() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("sounds"))
+}
+
 /// Extra fonts loaded alongside the system's — drop .ttf/.otf files here to
 /// use them without installing system-wide.
 pub fn fonts_dir() -> Option<PathBuf> {

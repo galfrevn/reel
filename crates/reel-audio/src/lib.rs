@@ -17,12 +17,14 @@ mod dsp;
 mod events;
 mod mix;
 mod recipes;
+mod soundfile;
 
 pub use events::{plan_events, AudioEvent, AudioPlan, GridChange, KeyKind, KeyInput, PlanConfig};
 pub use mix::mix;
 pub use recipes::{
     keyboard_profile, keyboard_profile_names, recipe, recipe_names, KeyboardProfile, Recipe,
 };
+pub use soundfile::{sound_from_toml, sound_to_toml, SoundFile, SOUND_SCHEMA};
 
 /// Everything is rendered at this rate, mono.
 pub const SAMPLE_RATE: u32 = 48_000;
@@ -41,5 +43,10 @@ pub fn render_sound(name: &str, pitch: f32, gain: f32, seed: u64) -> Result<Vec<
     let r = recipes::recipe(name).ok_or_else(|| {
         AudioError::UnknownSound(name.to_string(), recipes::recipe_names().join(", "))
     })?;
-    Ok(dsp::render_recipe(r, pitch, gain, seed))
+    Ok(dsp::render_recipe(&r, pitch, gain, seed))
+}
+
+/// Renders any recipe (builtin or loaded from TOML) to samples.
+pub fn render_recipe(recipe: &Recipe, pitch: f32, gain: f32, seed: u64) -> Vec<f32> {
+    dsp::render_recipe(recipe, pitch, gain, seed)
 }

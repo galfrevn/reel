@@ -9,6 +9,7 @@ on:
     paths:
       - "registry/**"
       - "templates/**"
+      - "sounds/**"
       - "crates/reel-cli/assets/demo.cast"
       - ".github/workflows/gallery.yml"
   workflow_dispatch:

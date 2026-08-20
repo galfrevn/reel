@@ -79,13 +79,20 @@ pub fn settings_from_config(cfg: &ReelConfig) -> Result<(RenderSettings, Vec<Str
         tpl.font = Some(f.clone());
     }
 
-    let theme_name = style.theme.as_deref().unwrap_or(tpl.theme.as_str());
-    let theme = theme::lookup(theme_name).ok_or_else(|| {
-        let mut names: Vec<String> =
-            theme::theme_names().iter().map(|s| s.to_string()).collect();
-        names.extend(theme::user_theme_names());
-        RenderError::UnknownTheme(theme_name.to_string(), names.join(", "))
-    })?;
+    // `[style] theme` (an explicit override) beats the template's palette;
+    // a palette embedded in the template beats its `theme` name reference.
+    let theme = match (&style.theme, &tpl.theme_colors) {
+        (None, Some(inline)) => inline.clone(),
+        (named, _) => {
+            let theme_name = named.as_deref().unwrap_or(tpl.theme.as_str());
+            theme::lookup(theme_name).ok_or_else(|| {
+                let mut names: Vec<String> =
+                    theme::theme_names().iter().map(|s| s.to_string()).collect();
+                names.extend(theme::user_theme_names());
+                RenderError::UnknownTheme(theme_name.to_string(), names.join(", "))
+            })?
+        }
+    };
 
     let aspect = match &cfg.output.aspect {
         Some(a) => Some(

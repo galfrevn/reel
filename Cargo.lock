@@ -1174,7 +1174,9 @@ name = "reel-audio"
 version = "0.1.0"
 dependencies = [
  "reel-timeline",
+ "serde",
  "thiserror 2.0.20",
+ "toml",
 ]
 
 [[package]]

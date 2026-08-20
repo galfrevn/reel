@@ -49,44 +49,22 @@ pub fn add(source: &str) -> Result<()> {
     }
 
     // owner/repo[/name] on GitHub.
-    let parts: Vec<&str> = source.split('/').filter(|p| !p.is_empty()).collect();
-    match parts.as_slice() {
-        [owner, repo] => {
-            let listing = net::fetch(
-                &format!("https://api.github.com/repos/{owner}/{repo}/contents/templates"),
-                &format!("listing templates in {owner}/{repo}…"),
-            )
-            .with_context(|| format!("listing templates in {owner}/{repo}"))?;
-            let entries: Vec<serde_json::Value> =
-                serde_json::from_str(&listing).context("parsing GitHub response")?;
+    match crate::packs::parse_source(source) {
+        Some((owner, repo, None)) => {
             let mut installed = Vec::new();
-            for e in &entries {
-                let name = e["name"].as_str().unwrap_or_default();
-                let Some(stem) = name.strip_suffix(".toml") else { continue };
-                let url = e["download_url"]
-                    .as_str()
-                    .ok_or_else(|| anyhow!("no download_url for {name}"))?;
-                let text = net::fetch(url, &format!("downloading {name}…"))
-                    .with_context(|| format!("downloading {name}"))?;
-                installed.push(install(&text, stem)?);
-            }
-            if installed.is_empty() {
-                bail!("{owner}/{repo} has no templates/*.toml files");
+            for (stem, text) in crate::packs::fetch_all(owner, repo, "templates")? {
+                installed.push(install(&text, &stem)?);
             }
             println!("installed from {owner}/{repo}: {}", installed.join(", "));
             Ok(())
         }
-        [owner, repo, name] => {
-            let url = format!(
-                "https://raw.githubusercontent.com/{owner}/{repo}/HEAD/templates/{name}.toml"
-            );
-            let text = net::fetch(&url, &format!("downloading {name} from {owner}/{repo}…"))
-                .with_context(|| format!("downloading templates/{name}.toml from {owner}/{repo}"))?;
+        Some((owner, repo, Some(name))) => {
+            let text = crate::packs::fetch_one(owner, repo, "templates", name)?;
             let installed = install(&text, name)?;
             println!("installed `{installed}` from {owner}/{repo}");
             Ok(())
         }
-        _ => bail!(
+        None => bail!(
             "`{source}` is neither a local .toml file nor owner/repo[/name] — \
              try `reel template add galfrevn/reel-templates`"
         ),
