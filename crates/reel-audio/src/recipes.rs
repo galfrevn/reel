@@ -360,10 +360,12 @@ pub struct KeyboardProfile {
 
 static PROFILES: &[KeyboardProfile] = &[
     KeyboardProfile { name: "mx-brown", press_pitch: 1.0, release_pitch: 1.0, gain: 1.0, release: true, click: false },
+    KeyboardProfile { name: "mx-red", press_pitch: 0.88, release_pitch: 0.95, gain: 0.8, release: true, click: false },
     KeyboardProfile { name: "mx-blue", press_pitch: 1.25, release_pitch: 1.15, gain: 1.05, release: true, click: true },
     KeyboardProfile { name: "topre", press_pitch: 0.62, release_pitch: 0.8, gain: 0.95, release: false, click: false },
     KeyboardProfile { name: "laptop", press_pitch: 1.45, release_pitch: 1.3, gain: 0.55, release: false, click: false },
     KeyboardProfile { name: "typewriter", press_pitch: 1.9, release_pitch: 2.2, gain: 1.25, release: true, click: true },
+    KeyboardProfile { name: "buckling-spring", press_pitch: 1.55, release_pitch: 1.75, gain: 1.3, release: true, click: true },
 ];
 
 pub fn keyboard_profile(name: &str) -> Option<KeyboardProfile> {
@@ -397,7 +399,7 @@ mod tests {
 
     #[test]
     fn spec_profiles_exist() {
-        for name in ["mx-brown", "mx-blue", "topre", "laptop", "typewriter"] {
+        for name in ["mx-brown", "mx-red", "mx-blue", "topre", "laptop", "typewriter", "buckling-spring"] {
             assert!(keyboard_profile(name).is_some(), "profile `{name}` missing");
         }
         assert!(keyboard_profile("none").is_none(), "`none` is handled by the planner, not a profile");

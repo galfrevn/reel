@@ -41,6 +41,32 @@
             "ui",
             "zap"
           ]
+        },
+        {
+          "name": "mouse-click",
+          "description": "A crisp two-part button click \u2014 cursor actions, selections",
+          "tags": [
+            "ui",
+            "click"
+          ]
+        },
+        {
+          "name": "pop",
+          "description": "A round bubble pop \u2014 toggles, pickups, tiny wins",
+          "tags": [
+            "ui",
+            "click",
+            "playful"
+          ]
+        },
+        {
+          "name": "snap",
+          "description": "A dry finger snap \u2014 attention, beat marks, section changes",
+          "tags": [
+            "ui",
+            "click",
+            "percussive"
+          ]
         }
       ]
     }

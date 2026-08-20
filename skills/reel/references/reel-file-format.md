@@ -60,7 +60,7 @@ jitter   = 0.35          # human variance around the mean, 0..1 (default 0.35)
 
 [audio]                  # rendered into .webm output only; ignored for .gif
 enabled   = true         # optional; defaults to on when any audio key or sound op is present
-keyboard  = "mx-brown"   # mx-brown | mx-blue | topre | laptop | typewriter | none
+keyboard  = "mx-brown"   # mx-brown | mx-red | mx-blue | topre | laptop | typewriter | buckling-spring | none
 volume    = 0.35         # master level 0..1
 ui_sounds = true         # auto pops when the screen responds after idle
 thinking  = "soft-pulse" # idle-gap bed recipe, or "none"

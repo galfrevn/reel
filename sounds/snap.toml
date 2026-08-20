@@ -1,0 +1,33 @@
+schema = 1
+name = "snap"
+description = "A dry finger snap — attention, beat marks, section changes"
+gain = 0.5
+
+# The snap itself: a dry mid-band crack.
+[[layers]]
+kind = "noise"
+attack = 0.001
+decay = 0.035
+peak = 0.12
+filter = "bandpass"
+frequency = 2400
+q = 1.0
+
+# Bright skin-on-skin sizzle.
+[[layers]]
+kind = "noise"
+attack = 0.001
+decay = 0.018
+peak = 0.06
+filter = "highpass"
+frequency = 6000
+q = 0.8
+
+# A low palm thump grounding the crack.
+[[layers]]
+kind = "tone"
+attack = 0.001
+decay = 0.045
+peak = 0.04
+waveform = "sine"
+frequency = 190

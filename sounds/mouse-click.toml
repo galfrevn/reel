@@ -1,0 +1,35 @@
+schema = 1
+name = "mouse-click"
+description = "A crisp two-part button click — cursor actions, selections"
+gain = 0.45
+
+# Down-click: sharp mid-high transient.
+[[layers]]
+kind = "noise"
+attack = 0.001
+decay = 0.014
+peak = 0.13
+filter = "bandpass"
+frequency = 3200
+q = 2.0
+
+# Plastic body of the button under the finger.
+[[layers]]
+kind = "noise"
+attack = 0.001
+decay = 0.02
+peak = 0.06
+filter = "bandpass"
+frequency = 1200
+q = 1.2
+
+# Up-click 70ms later: softer and brighter, like the button springing back.
+[[layers]]
+kind = "noise"
+offset = 0.07
+attack = 0.001
+decay = 0.012
+peak = 0.09
+filter = "bandpass"
+frequency = 4300
+q = 2.0
