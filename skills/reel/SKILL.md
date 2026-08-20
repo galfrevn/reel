@@ -1,6 +1,6 @@
 ---
 name: reel
-description: Turn terminal recordings into polished, shareable demos using the reel CLI — record a session once (reel record or asciinema), then edit it like video (trim dead air, cut mistakes, speed-ramp slow parts, zoom, caption) and render a styled, size-budgeted GIF, or a WebM with procedurally synthesized sound, without ever re-running the program. Also covers reel's community registry — searching, previewing, installing, and publishing templates (terminal looks) and sound recipes. Use this skill whenever the user wants a demo of their CLI or TUI, a GIF for a README, launch tweet, or docs, wants to shorten/clean up/restyle a terminal recording, mentions asciinema or .cast files, asks to "record my terminal" or "make a demo" of a command-line tool, or wants to find, install, or share a demo template or sound — even if they never mention reel by name.
+description: Turn terminal recordings into polished, shareable demos using the reel CLI — record a session once (reel record or asciinema), then edit it like video (trim dead air, cut mistakes, speed-ramp slow parts, zoom, caption) and render a styled, size-budgeted GIF, or a WebM with procedurally synthesized sound, without ever re-running the program. Also covers reel's community registry — searching, previewing, installing, and publishing templates (terminal looks) and sound recipes. Use this skill whenever the user wants a demo of their CLI or TUI, a GIF for a README, launch tweet, or docs, wants to shorten/clean up/restyle a terminal recording, mentions asciinema or .cast files, asks to "record my terminal" or "make a demo" of a command-line tool, wants keystrokes shown on screen in a recording (screenkey-style), wants to mark/flag moments while recording to edit by name later, or wants to find, install, or share a demo template or sound — even if they never mention reel by name.
 ---
 
 # Making terminal demos with reel
@@ -62,11 +62,6 @@ pacing — all of that gets fixed in the edit. Ctrl+D or `exit` ends the
 recording. A non-interactive demo (e.g. showing a build or install) you can
 record yourself.
 
-Also tell them about `Ctrl+]`: pressing it while recording drops a marker
-(never sent to the program). Markers make the edit step precise without
-timestamp hunting — `trim @1..@2`, `cut @2..@3`, `caption "…" at @1 for 2s`.
-`reel inspect` lists them.
-
 Then sanity-check the recording with a default render:
 
 ```sh
@@ -86,10 +81,12 @@ the classic problems — fixing these is where the value is:
 - **Slow start / trailing junk**: prompt setup at the head, the final `exit` → `trim`.
 - **Typos and mistakes** → `cut` the range.
 - **The money shot**: the moment worth magnifying → `zoom`, `caption`, `highlight`.
-- **Input-driven demos** (keybindings, TUI navigation): `keys on` overlays
-  the recorded keystrokes as chips so viewers see what was pressed.
 - **Looping**: GIFs loop; `freeze last 1.5s` gives the eye a resting point
   before the restart.
+
+If `inspect` lists **markers**, the user dropped them on purpose while
+recording — anchor your ops on them (`trim @1..@2`, `caption "…" at @done`)
+instead of hunting timestamps. See "Opt-in extras" below.
 
 `reel suggest session.cast --write demo.reel` drafts the edit script for you
 (trims, speed ramps over dead air) — a good starting point to tune rather
@@ -153,6 +150,46 @@ Re-rendering is sub-second, so treat feedback as free: adjust ops and
 re-render. If the user wants to fiddle with the look themselves, offer
 `reel watch demo.reel --serve` — it re-renders on save with a live browser
 preview at `http://127.0.0.1:4171/`.
+
+## Opt-in extras — only when the user asks
+
+None of these belong in a demo by default. A good demo is the program on a
+clean stage; these are instruments you pick up on request, not seasoning to
+sprinkle. Add one only when the user asks for it (in any words), or — for
+markers — when the recording shows the user already chose it.
+
+### Markers: name moments instead of hunting timestamps
+
+If the user wants precise control over where edits land ("I'll mark the
+good parts", "how do I flag the moment it finishes?"), tell them **before
+they record**: pressing `Ctrl+]` during `reel record` drops a marker at
+that instant — it never reaches the program, a bell confirms it, and the
+summary counts them.
+
+Recorded markers auto-label `@1`, `@2`, … in order; `marker "name" at T`
+defines named ones in the `.reel` file after the fact. Every time
+expression accepts them: `trim @1..@2`, `speed 5x from @1 to @2`,
+`caption "…" at @done for 2s`, `reel shot --at @done`. `reel inspect`
+prints the table. An unknown `@name` fails listing what exists.
+
+Markers already present in a cast are the one self-authorizing case: the
+user pressed the key on purpose, so build your edit around them.
+
+### Keystroke overlay: show what was typed
+
+`keys on` (or `keys A..B` / `keys @1..@2`) overlays the recorded input as
+screenkey-style chips at the bottom of the frame: typed runs group into
+words (`cargo test`), special keys render as symbols (`⏎ ⇥ ⌫ ↑ ^C`), each
+chip lingers ~1.2 s, and chips whose footage you `cut` disappear with it.
+
+Reach for it only when the user asks to see the input — "show my
+keystrokes", a keybindings cheat-sheet demo, TUI navigation where the
+commands are the content. Never add it to an ordinary CLI demo: the typing
+is already visible in the terminal.
+
+`redact` patterns mask chip labels too, so a typed secret can't resurface
+in the overlay — but the safe order is still redact first, then enable the
+overlay and re-check.
 
 ## Choosing a look
 
