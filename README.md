@@ -25,12 +25,38 @@ milliseconds without ever re-running the underlying program.
 
 ## Install
 
+reel is built to be driven by a coding agent. Add the skill and that's the
+whole setup — the agent installs the binary on first use, then records,
+edits, and renders for you:
+
+```sh
+npx skills add galfrevn/reel
+```
+
+Works anywhere [agent skills](skills/reel/SKILL.md) do (Claude Code, Cursor,
+…). Ask for the outcome rather than the steps —
+
+> *"record a demo of my CLI and make me a README GIF under 800kb with the
+> boring install part sped up"*
+
+— and the agent handles the recording setup, the inspection, the `.reel`
+edit script, the render, and the size budget. You only perform the live
+session and judge the result.
+
+<details>
+<summary><strong>Or install it by hand</strong></summary>
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/galfrevn/reel/main/setup.sh | bash
 ```
 
 Grabs a prebuilt binary when one exists for your platform, otherwise builds
-from source with cargo. One binary — no `ttyd`, no `ffmpeg`.
+from source with cargo. One binary — no `ttyd`, no `ffmpeg`. Prefer to skip
+the script? Download the tarball for your platform straight from
+[releases](https://github.com/galfrevn/reel/releases/latest) and drop `reel`
+somewhere on your `PATH`.
+
+</details>
 
 ## Quick start
 
@@ -120,24 +146,15 @@ Publishing your own is a [PR with a TOML file](registry/README.md) — no
 accounts, no infrastructure. Sounds work the same way: `reel audio search`,
 `reel audio try`, `reel audio publish`.
 
-## Let your agent do it
-
-reel ships an [agent skill](skills/reel/SKILL.md) so coding agents (Claude
-Code, Cursor, etc.) can produce the demo for you — record once, then ask for
-"a README GIF under 800kb with the boring part sped up":
-
-```sh
-npx skills add galfrevn/reel
-```
-
 ## Documentation
 
 | Doc | What's in it |
 |---|---|
+| [skills/reel/SKILL.md](skills/reel/SKILL.md) | The agent skill: how an agent installs, records, edits, and renders |
 | [documentation/idea.md](documentation/idea.md) | What reel is, why it exists, and what it deliberately isn't |
 | [documentation/setup.md](documentation/setup.md) | Full user guide: install, recording, the `.reel` format, templates, audio, agent skill |
 | [documentation/development.md](documentation/development.md) | Building from source, workspace layout, tests, CI |
-| [documentation/roadmap.md](documentation/roadmap.md) | What's next: script mode, `.tape` import, performance, formats |
+| [documentation/roadmap.md](documentation/roadmap.md) | What's next: script mode, kitty/sixel graphics, `.tape` import, formats |
 
 ## License
 

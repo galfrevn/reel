@@ -25,16 +25,46 @@ full catalog.
 
 ## Setup
 
-Check that reel is available:
+Installing reel is your job, not the user's. Check first:
 
 ```sh
 reel --version
 ```
 
-If it isn't, do not install it yourself — ask the user to install it first
-(prebuilt binaries and instructions in the Install section of
-<https://github.com/galfrevn/reel>), then continue once `reel --version`
-succeeds.
+If that fails, fetch the prebuilt binary for this machine from GitHub
+Releases — a tarball holding one static executable, no install script and
+nothing else to set up:
+
+```sh
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64)        target=aarch64-apple-darwin ;;
+  Darwin-x86_64)       target=x86_64-apple-darwin ;;
+  Linux-x86_64|Linux-amd64) target=x86_64-unknown-linux-gnu ;;
+  *) echo "no prebuilt binary for this platform"; exit 1 ;;
+esac
+
+mkdir -p ~/.local/bin
+curl -fsSL "https://github.com/galfrevn/reel/releases/latest/download/reel-$target.tar.gz" \
+  -o reel.tar.gz
+tar -xzf reel.tar.gz -C ~/.local/bin reel && rm reel.tar.gz
+~/.local/bin/reel --version
+```
+
+Tell the user in one line what you installed and where. If `~/.local/bin`
+isn't on their `PATH`, keep using the full path for the rest of the session
+and mention the export they'd need to make it permanent.
+
+If no release matches this platform (Windows, other architectures), build
+from source instead — needs Rust, plus libvpx headers for the WebM encoder
+(`brew install libvpx`, `apt install libvpx-dev libclang-dev`):
+
+```sh
+cargo install --git https://github.com/galfrevn/reel reel-cli
+```
+
+Only if both routes fail (no network, no cargo) should you stop and ask the
+user to install reel themselves from
+<https://github.com/galfrevn/reel#install>.
 
 reel records, edits, and renders on its own; asciinema `.cast` files also
 work as input if the user already has one.

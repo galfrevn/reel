@@ -34,8 +34,46 @@ done.
 - **Gradient auto-flatten for GIF** — gradient canvases (e.g. `glass`) fight
   palette efficiency; reel currently warns. It should auto-flatten to a solid
   (or a small dithered ramp) for GIF targets and say what it did.
-- **Sixel / Kitty graphics protocol** — more TUIs render inline images every
-  month; supporting them in the VT layer is a real differentiator.
+- **Inline graphics (sixel + kitty)** — more TUIs render images every month;
+  supporting them in the VT layer is a real differentiator. Sixel decoding
+  works today; the kitty half is half-built and parked — see
+  [Kitty graphics in recordings](#kitty-graphics-in-recordings-parked-mid-flight).
+
+## Kitty graphics in recordings (parked mid-flight)
+
+The goal: `reel record --graphics -- <a kitty-graphics TUI>` (terminal
+browsers, image previewers) produces a video with real images in it. Most of
+the plumbing is written and verified on the `feature/markers-and-key-overlay`
+branch — not merged to main:
+
+- `reel record --graphics` (opt-in) answers kitty `a=q` capability probes
+  with `OK` for `t=d` and refuses `t=s`/`t=f` (shared memory and files are
+  gone by render time — the same degradation kitty clients already handle
+  over SSH), and answers `CSI 14t/16t/18t` claiming the renderer's 10×20 px
+  cell. Verified end-to-end against a terminal browser: it probes shm →
+  file → falls back to direct `f=32,o=z` and sizes frames to exactly
+  1200×800 on a 120×40 grid.
+- The replay decoder (`reel-term/src/graphics.rs`) handles `o=z` (zlib RGBA
+  via miniz_oxide), image ids (`i=`), per-id deletes (`a=d,d=I,i=N`), and a
+  `MAX_DIM` of 4096 for Retina-sized panes.
+
+What stopped the effort, in order of importance:
+
+1. **Image-only frame changes dedupe away.** `replay()` keeps a snapshot
+   only when `content_hash()` (text cells) or `images.len()` changes
+   (`reel-term/src/lib.rs`, ~line 339). A TUI that repaints full-pane frames
+   under the same image id keeps both constant, so every frame after the
+   first is dropped and the video freezes. Fix: fold an image generation
+   counter (or a hash of image ids + rgba pointers) into the snapshot-keep
+   decision.
+2. **Electron apps don't paint page content headless.** Under an
+   agent/SSH-style session the UI shell renders (dark toolbar and white text
+   pixels show up in the decoded frames) but web contents stay black —
+   re-test interactively from a real GUI terminal.
+3. Untested: live recording inside an actually-kitty-capable terminal
+   (double probe replies are expected and believed harmless; confirm).
+
+Sixel capture needs no flag and already works.
 
 ## Output formats
 
@@ -71,6 +109,10 @@ fallback.
 
 ## Distribution
 
+- **Agent-first install** — the skill now installs the binary itself from
+  GitHub Releases, so `npx skills add galfrevn/reel` is the entire setup.
+  Next: a `reel doctor` that reports fonts, codecs, and PATH in one place so
+  the agent can diagnose a broken install instead of guessing.
 - **GitHub Action** — re-introduce a composite action (`uses: galfrevn/reel`)
   that renders `.reel`/`.cast` files in CI so README demos never go stale.
   Removed from the repo until the CLI surface stabilizes; the setup script

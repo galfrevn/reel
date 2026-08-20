@@ -5,6 +5,10 @@ any of this — let a coding agent do the whole thing for you.
 
 ## Install
 
+Using the [agent skill](../skills/reel/SKILL.md)? Skip this section — the
+agent installs reel for you the first time it needs it. To install it
+yourself:
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/galfrevn/reel/main/setup.sh | bash
 ```
