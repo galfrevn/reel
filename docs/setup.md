@@ -111,14 +111,20 @@ Pick a template by destination:
 | `paper` | Light background; daytime documentation sites |
 | `crt` | Phosphor glow, scanlines, vignette; the eye-catching share |
 
-Customize or bring your own:
+Customize, discover, or bring your own:
 
 ```sh
 reel template show glass > mine.toml    # start from a built-in
+reel template try mine.toml             # preview it on the bundled demo cast
 reel template add mine.toml             # register your edit
+reel template search neon               # find community templates
+reel template try owner/repo/name       # preview one without installing
 reel template add owner/repo            # install a pack from GitHub
 reel theme import my-colors.itermcolors # base16 YAML, Alacritty, iTerm2
 ```
+
+`--template` also takes a `.toml` path directly anywhere a name works, and
+publishing your own pack is a PR — see [registry/README.md](../registry/README.md).
 
 Gradient backgrounds (like `glass`) cost GIF palette efficiency — under a
 tight `budget`, a solid-canvas template (`minimal`, `classic`, `geist`)

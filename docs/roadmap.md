@@ -42,35 +42,26 @@ done.
 
 ## Template registry & gallery
 
-The seed exists: `reel template add owner/repo[/name]` already installs from
-any GitHub repo with a `templates/` directory. The registry stays federated —
-GitHub is the storage, a static site is the storefront, nothing to run. The
-key trick throughout: reel renders its own previews, so every template is
-shown against the same canonical demo cast — consistent, comparable, never
-stale.
+The registry lives in this repo (`registry/index.json` + `registry/README.md`
++ the `templates/` seed pack) — packs live in their authors' repos, the index
+only points at them (Homebrew-tap model). Shipped so far: `schema = 1` template versioning, path-based `--template`,
+the seed pack in `templates/`, `registry/index.json`, the canonical demo
+cast (`crates/reel-cli/assets/demo.cast`, embedded), and the
+`reel template search` / `try` commands. The registry stays federated —
+GitHub is the storage, a static site is the storefront, nothing to run.
+Every preview renders the same demo cast, so looks stay comparable. Next:
 
-1. **Index repo** — `galfrevn/reel-registry` with a versioned `index.json`
-   (name, author, source repo, description, tags) pointing at packs that live
-   in their authors' repos. Publishing = a PR against the index (Homebrew-tap
-   model). Ships with the canonical demo `.cast`: typing, ANSI color, a diff,
-   tests going green.
-2. **CLI: `search` + `try`** — `reel template search <query>` fetches the
-   index; `reel template try owner/repo/name` downloads to a temp dir,
-   renders the bundled demo cast with it, and opens the result — preview the
-   look without touching the config dir.
-3. **Static gallery** — a GitHub Action in the registry repo renders every
-   template against the canonical cast on merge and publishes a GitHub Pages
-   grid of animated previews, each with its `reel template add …` install
-   line. First real consumer of the composite render Action below.
-4. **CLI: `publish`** — validates the TOML, renders the preview locally, and
-   scaffolds the pack repo / opens the index PR via `gh`.
+- **Static gallery** — a GitHub Action renders every registry template
+  against the canonical cast on merge and publishes a GitHub Pages grid of
+  animated previews, each with its `reel template add …` install line.
+  First real consumer of the composite render Action below.
+- **`reel template publish`** — validates the TOML, renders the preview
+  locally, and scaffolds the pack repo / opens the index PR via `gh`.
 
-Prerequisite: version the template TOML schema (`schema = 1`) before
-third-party templates exist in the wild — every field added after that is a
-compatibility question. Templates stay declarative TOML (no code execution),
-which is what keeps installing a stranger's template trivially safe. Packs
-never bundle fonts (licensing); templates reference fonts by name with the
-system-chain fallback.
+Constraints kept on purpose: templates stay declarative TOML (installing a
+stranger's template can't execute anything), and packs never bundle fonts
+(licensing) — templates reference fonts by name with the system-chain
+fallback.
 
 ## Distribution
 

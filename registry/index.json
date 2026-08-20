@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "packs": [
+    {
+      "repo": "galfrevn/reel",
+      "description": "Official starter pack — ships with the reel repo",
+      "templates": [
+        {
+          "name": "synthwave",
+          "description": "Neon gradient, soft glow, retro without the scanline grit",
+          "tags": ["dark", "gradient", "glow"]
+        },
+        {
+          "name": "slate",
+          "description": "Muted dark slate with dot titlebar — docs-site sober",
+          "tags": ["dark", "minimal", "docs"]
+        },
+        {
+          "name": "latte",
+          "description": "Warm light mode with macOS chrome — READMEs that feel friendly",
+          "tags": ["light", "macos", "warm"]
+        }
+      ]
+    }
+  ]
+}

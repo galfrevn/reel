@@ -1,0 +1,19 @@
+schema = 1
+name = "slate"
+description = "Muted dark slate with dot titlebar — docs-site sober"
+theme = "geist-dark"
+window = "rounded"
+titlebar = "dots"
+titlebar_rule = true
+corner_radius = 10.0
+padding = 22.0
+inset = 44.0
+border = "#ffffff1f"
+
+[canvas]
+solid = "#101318"
+
+[shadow]
+blur = 28.0
+opacity = 0.35
+offset_y = 8.0

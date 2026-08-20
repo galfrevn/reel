@@ -1,5 +1,7 @@
+mod net;
 mod pipeline;
 mod record;
+mod registry;
 mod script;
 mod suggest;
 mod templates;
@@ -31,7 +33,7 @@ enum Command {
         /// Output file; extension picks the format (.gif, .webm, .png, .txt)
         #[arg(long, short)]
         out: Option<PathBuf>,
-        /// Template override (minimal, glass, classic, paper)
+        /// Template override: a name (see `reel templates`) or a .toml path
         #[arg(long)]
         template: Option<String>,
         /// Size budget like 800kb or 2mb; the encoder degrades to fit
@@ -113,7 +115,7 @@ enum Command {
     },
     /// Scaffold a new .reel file
     Init {
-        /// Template to reference (minimal, glass, classic, paper)
+        /// Template to reference (see `reel templates` for the list)
         #[arg(default_value = "glass")]
         template: String,
         #[arg(long, short, default_value = "demo.reel")]
@@ -143,6 +145,16 @@ enum TemplateAction {
     Show { name: String },
     /// Install templates from a .toml file or a GitHub repo (owner/repo[/name])
     Add { source: String },
+    /// Search the community template registry
+    Search {
+        /// Match against names, descriptions, tags, and repos; empty lists all
+        query: Option<String>,
+    },
+    /// Preview a template against the bundled demo cast, without installing
+    Try {
+        /// A template name, a local .toml file, or owner/repo/name on GitHub
+        source: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -214,6 +226,12 @@ fn run() -> Result<()> {
         }
         Command::Template { action: TemplateAction::Show { name } } => templates::show(&name),
         Command::Template { action: TemplateAction::Add { source } } => templates::add(&source),
+        Command::Template { action: TemplateAction::Search { query } } => {
+            registry::search(query.as_deref())
+        }
+        Command::Template { action: TemplateAction::Try { source } } => {
+            templates::try_template(&source)
+        }
         Command::Themes | Command::Theme { action: ThemeAction::List } => {
             list_themes();
             Ok(())
