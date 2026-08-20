@@ -1,4 +1,4 @@
-schema = 1
+schema = 2
 name = "synthwave"
 description = "Neon gradient, soft glow, retro without the scanline grit"
 theme = "tokyo-night"
@@ -8,10 +8,20 @@ corner_radius = 14.0
 padding = 26.0
 inset = 56.0
 
+[canvas]
+grain = 0.05
+
 [canvas.gradient]
 angle = 135.0
-from = "#1a0b2e"
-to = "#3d1d6b"
+stops = [["#1a0b2e", 0.0], ["#3d1d6b", 0.65], ["#7a1e5c", 1.0]]
+
+[cursor]
+style = "beam"
+color = "#ff2d8d"
+
+[motion]
+cursor_slide = true
+typing_glow = 0.45
 
 [shadow]
 blur = 42.0

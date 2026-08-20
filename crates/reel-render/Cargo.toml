@@ -16,6 +16,8 @@ serde = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
 fontdb = "0.24.0"
+png = "0.18"
+jpeg-decoder = { version = "0.3", default-features = false }
 
 [dev-dependencies]
 reel-cast = { path = "../reel-cast" }

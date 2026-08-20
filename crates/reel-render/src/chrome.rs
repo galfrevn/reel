@@ -7,7 +7,7 @@ use crate::template::{CanvasBg, Template, Titlebar, WindowStyle};
 use crate::theme::{Rgba, Theme};
 use tiny_skia::{
     FillRule, GradientStop, LinearGradient, Paint, PathBuilder, Pixmap, PixmapPaint, Point,
-    Rect, SpreadMode, Transform,
+    RadialGradient, Rect, SpreadMode, Transform,
 };
 
 const TITLEBAR_H: f32 = 34.0;
@@ -119,15 +119,24 @@ pub fn compose_base(
     let mut canvas = Pixmap::new(l.canvas_w, l.canvas_h).expect("canvas pixmap");
 
     draw_canvas_bg(&mut canvas, &tpl.canvas);
+    if tpl.grain > 0.0 {
+        apply_grain(&mut canvas, tpl.grain, s);
+    }
 
     let radius = tpl.corner_radius * s;
     if tpl.window != WindowStyle::None {
         if let Some(sh) = &tpl.shadow {
             draw_shadow(&mut canvas, &l, radius, sh.blur * s, sh.opacity, sh.offset_y * s);
         }
+        if tpl.window_blur > 0.0 {
+            blur_behind_window(&mut canvas, &l, radius, tpl.window_blur * s);
+        }
         let win = Rect::from_xywh(l.win_x, l.win_y, l.win_w, l.win_h).expect("window rect");
         // Window body in the theme background so padding blends with content.
-        fill_rounded(&mut canvas, win, radius, theme.bg);
+        // Alpha below 1 lets the canvas show through — glassmorphism.
+        let alpha = (tpl.window_opacity.clamp(0.0, 1.0) * theme.bg.a as f32) as u8;
+        let body = Rgba { a: alpha, ..theme.bg };
+        fill_rounded(&mut canvas, win, radius, body);
         match tpl.titlebar {
             Titlebar::TrafficLights => draw_dots(
                 &mut canvas,
@@ -204,10 +213,16 @@ pub fn compose(tpl: &Template, theme: &Theme, term: &Pixmap, s: f32) -> Pixmap {
 }
 
 fn draw_canvas_bg(canvas: &mut Pixmap, bg: &CanvasBg) {
-    match *bg {
-        CanvasBg::Solid(c) => crate::raster::fill(canvas, c),
-        CanvasBg::Linear { angle_deg, from, to } => {
-            let (w, h) = (canvas.width() as f32, canvas.height() as f32);
+    let (w, h) = (canvas.width() as f32, canvas.height() as f32);
+    let gradient_stops = |stops: &[(f32, crate::theme::Rgba)]| {
+        stops
+            .iter()
+            .map(|(pos, c)| GradientStop::new(pos.clamp(0.0, 1.0), skia_color(*c)))
+            .collect::<Vec<_>>()
+    };
+    match bg {
+        CanvasBg::Solid(c) => crate::raster::fill(canvas, *c),
+        CanvasBg::Linear { angle_deg, stops } => {
             // CSS angle: 0deg points up, clockwise. Convert to a start→end
             // vector through the canvas center.
             let rad = angle_deg.to_radians();
@@ -220,10 +235,7 @@ fn draw_canvas_bg(canvas: &mut Pixmap, bg: &CanvasBg) {
                 shader: LinearGradient::new(
                     start,
                     end,
-                    vec![
-                        GradientStop::new(0.0, skia_color(from)),
-                        GradientStop::new(1.0, skia_color(to)),
-                    ],
+                    gradient_stops(stops),
                     SpreadMode::Pad,
                     Transform::identity(),
                 )
@@ -232,6 +244,87 @@ fn draw_canvas_bg(canvas: &mut Pixmap, bg: &CanvasBg) {
             };
             let rect = Rect::from_xywh(0.0, 0.0, w, h).unwrap();
             canvas.fill_rect(rect, &paint, Transform::identity(), None);
+        }
+        CanvasBg::Radial { stops } => {
+            let center = Point::from_xy(w / 2.0, h / 2.0);
+            // Radius to the corner so the last stop lands at the canvas edge.
+            let radius = (w * w + h * h).sqrt() / 2.0;
+            let paint = Paint {
+                shader: RadialGradient::new(
+                    center,
+                    0.0,
+                    center,
+                    radius,
+                    gradient_stops(stops),
+                    SpreadMode::Pad,
+                    Transform::identity(),
+                )
+                .expect("radial gradient"),
+                ..Paint::default()
+            };
+            let rect = Rect::from_xywh(0.0, 0.0, w, h).unwrap();
+            canvas.fill_rect(rect, &paint, Transform::identity(), None);
+        }
+        CanvasBg::Image { img, fit, dim, blur } => {
+            crate::image::draw_background(canvas, &img.pix, *fit, *dim, *blur);
+        }
+    }
+}
+
+/// Deterministic film grain: a seeded xorshift per pixel, so renders stay
+/// byte-identical run to run.
+fn apply_grain(canvas: &mut Pixmap, strength: f32, s: f32) {
+    let amp = strength.clamp(0.0, 1.0) * 14.0 * s.max(1.0);
+    let mut state: u32 = 0x9e37_79b9;
+    for p in canvas.pixels_mut() {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        let n = ((state >> 8) as f32 / (1u32 << 24) as f32 - 0.5) * amp;
+        let a = p.alpha();
+        let adj = |v: u8| (v as f32 + n).clamp(0.0, a as f32) as u8;
+        *p = tiny_skia::PremultipliedColorU8::from_rgba(
+            adj(p.red()),
+            adj(p.green()),
+            adj(p.blue()),
+            a,
+        )
+        .unwrap_or(*p);
+    }
+}
+
+/// Frosted glass: blurs the canvas inside the window's rounded silhouette so
+/// a translucent window body composits over softened background.
+fn blur_behind_window(canvas: &mut Pixmap, l: &Layout, radius: f32, blur: f32) {
+    let x0 = l.win_x.floor().max(0.0) as u32;
+    let y0 = l.win_y.floor().max(0.0) as u32;
+    let x1 = (l.win_x + l.win_w).ceil().min(canvas.width() as f32) as u32;
+    let y1 = (l.win_y + l.win_h).ceil().min(canvas.height() as f32) as u32;
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+    let before = canvas.clone();
+    crate::image::blur_region(canvas, x0, y0, x1 - x0, y1 - y0, blur);
+    // Restore the corner areas outside the rounded silhouette so the blur
+    // doesn't leak past the window shape.
+    let r = radius.max(0.0);
+    if r <= 0.5 {
+        return;
+    }
+    let w = canvas.width() as usize;
+    let px = canvas.pixels_mut();
+    let old = before.pixels();
+    for y in y0..y1 {
+        let fy = y as f32 + 0.5;
+        for x in x0..x1 {
+            let fx = x as f32 + 0.5;
+            let cx = fx.clamp(l.win_x + r, l.win_x + l.win_w - r);
+            let cy = fy.clamp(l.win_y + r, l.win_y + l.win_h - r);
+            let corner = (fx - cx).abs() > 0.0 && (fy - cy).abs() > 0.0;
+            if corner && (fx - cx).hypot(fy - cy) > r {
+                let i = y as usize * w + x as usize;
+                px[i] = old[i];
+            }
         }
     }
 }

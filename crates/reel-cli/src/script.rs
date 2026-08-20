@@ -37,11 +37,24 @@ pub fn capture(path: &Path, file: &ReelFile, quiet: bool) -> Result<PathBuf> {
         .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| anyhow!("openpty: {e}"))?;
     let mut cmd = shell_words(command)?;
-    let mut builder = CommandBuilder::new(cmd.remove(0));
+    let program = cmd.remove(0);
+    // Branded prompt from the template: only `reel run` can do this honestly,
+    // because here reel is the one launching the shell.
+    let prompt = prompt_injection(&file.config.template.name, &program, &cmd);
+    let mut builder = CommandBuilder::new(&program);
+    if let Some(p) = &prompt {
+        builder.args(&p.extra_args);
+    }
     builder.args(&cmd);
     builder.env("TERM", "xterm-256color");
     builder.env("COLORTERM", "truecolor");
-    // `[env]` table: extra variables for the child (PS1, LANG, …).
+    if let Some(p) = &prompt {
+        for (k, v) in &p.env {
+            builder.env(k, v);
+        }
+    }
+    // `[env]` table: extra variables for the child (PS1, LANG, …) — set
+    // after the template prompt so an explicit PS1 wins.
     if let Some(toml::Value::Table(env)) = &file.config.env {
         for (k, v) in env {
             if let toml::Value::String(v) = v {
@@ -276,6 +289,75 @@ fn key_bytes(key: &str) -> Option<Vec<u8>> {
             ch.to_string().into_bytes()
         }
     })
+}
+
+/// What a template `[prompt]` turns into for the spawned command: env vars
+/// carrying the prompt string, plus rc-skipping flags when the command is a
+/// bare shell (a themed .zshrc would immediately repaint over our prompt).
+struct PromptInjection {
+    extra_args: Vec<String>,
+    env: Vec<(String, String)>,
+}
+
+fn prompt_injection(template: &str, program: &str, args: &[String]) -> Option<PromptInjection> {
+    let tpl = reel_render::template::lookup(template)?;
+    let p = tpl.prompt?;
+    let shell = Path::new(program).file_name()?.to_str()?;
+    let bare = args.is_empty();
+    use reel_render::template::PromptPath;
+
+    let paint = |sym: &str, wrap: &dyn Fn(&str) -> String| match p.color {
+        Some(c) => format!(
+            "{}{sym}{}",
+            wrap(&format!("\x1b[38;2;{};{};{}m", c.r, c.g, c.b)),
+            wrap("\x1b[0m"),
+        ),
+        None => sym.to_string(),
+    };
+
+    let mut env = Vec::new();
+    let mut extra_args = Vec::new();
+    match shell {
+        "zsh" => {
+            let path = match p.path {
+                PromptPath::None => "",
+                PromptPath::Short => "%1~ ",
+                PromptPath::Full => "%~ ",
+            };
+            let sym = paint(&p.symbol, &|esc| format!("%{{{esc}%}}"));
+            env.push(("PROMPT".to_string(), format!("{sym} {path}")));
+            if bare {
+                // No rc files: reproducible demos, and .zshrc prompt themes
+                // would clobber the injected one.
+                extra_args.push("-f".to_string());
+            }
+        }
+        "bash" | "sh" | "dash" | "ksh" => {
+            let path = match p.path {
+                PromptPath::None => "",
+                PromptPath::Short => "\\W ",
+                PromptPath::Full => "\\w ",
+            };
+            let sym = paint(&p.symbol, &|esc| format!("\\[{esc}\\]"));
+            env.push(("PS1".to_string(), format!("{sym} {path}")));
+            if shell == "bash" {
+                // macOS prints a "default shell is now zsh" banner into every
+                // bash demo otherwise.
+                env.push(("BASH_SILENCE_DEPRECATION_WARNING".to_string(), "1".to_string()));
+                if bare {
+                    extra_args.push("--noprofile".to_string());
+                    extra_args.push("--norc".to_string());
+                }
+            }
+        }
+        // Unknown program: export PS1 anyway — harmless for non-shells,
+        // picked up by anything POSIX-ish spawned inside.
+        _ => {
+            let sym = paint(&p.symbol, &|esc| esc.to_string());
+            env.push(("PS1".to_string(), format!("{sym} ")));
+        }
+    }
+    Some(PromptInjection { extra_args, env })
 }
 
 /// Minimal shell-style splitting: whitespace-separated, quotes respected.
