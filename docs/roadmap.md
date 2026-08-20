@@ -40,6 +40,38 @@ done.
 - **`--frames-out`** — dump raw frames so anyone who needs MP4/H.264 can pipe
   to their own ffmpeg. (Shipping an MP4 encoder is off the table: licensing.)
 
+## Template registry & gallery
+
+The seed exists: `reel template add owner/repo[/name]` already installs from
+any GitHub repo with a `templates/` directory. The registry stays federated —
+GitHub is the storage, a static site is the storefront, nothing to run. The
+key trick throughout: reel renders its own previews, so every template is
+shown against the same canonical demo cast — consistent, comparable, never
+stale.
+
+1. **Index repo** — `galfrevn/reel-registry` with a versioned `index.json`
+   (name, author, source repo, description, tags) pointing at packs that live
+   in their authors' repos. Publishing = a PR against the index (Homebrew-tap
+   model). Ships with the canonical demo `.cast`: typing, ANSI color, a diff,
+   tests going green.
+2. **CLI: `search` + `try`** — `reel template search <query>` fetches the
+   index; `reel template try owner/repo/name` downloads to a temp dir,
+   renders the bundled demo cast with it, and opens the result — preview the
+   look without touching the config dir.
+3. **Static gallery** — a GitHub Action in the registry repo renders every
+   template against the canonical cast on merge and publishes a GitHub Pages
+   grid of animated previews, each with its `reel template add …` install
+   line. First real consumer of the composite render Action below.
+4. **CLI: `publish`** — validates the TOML, renders the preview locally, and
+   scaffolds the pack repo / opens the index PR via `gh`.
+
+Prerequisite: version the template TOML schema (`schema = 1`) before
+third-party templates exist in the wild — every field added after that is a
+compatibility question. Templates stay declarative TOML (no code execution),
+which is what keeps installing a stranger's template trivially safe. Packs
+never bundle fonts (licensing); templates reference fonts by name with the
+system-chain fallback.
+
 ## Distribution
 
 - **GitHub Action** — re-introduce a composite action (`uses: galfrevn/reel`)
@@ -53,4 +85,5 @@ done.
 
 Kept here so they don't creep back in — see [idea.md](idea.md) for the
 reasoning: TUI testing framework, general-purpose scripting language, desktop
-screen recording, hosted sharing service.
+screen recording, hosted sharing of user videos (the template registry is
+GitHub-federated + static — no backend).

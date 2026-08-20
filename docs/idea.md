@@ -81,4 +81,7 @@ Scope creep kills projects like this. The boundary is defended:
 - **Not a general-purpose scripting language.** No loops, no conditionals,
   no interpreter.
 - **Not a screen recorder.** Terminal only — no desktop windows, no GUI apps.
-- **Not a hosting/sharing service.** Files out, that's it.
+- **Not a hosting/sharing service — for videos.** Files out, that's it: reel
+  never uploads or hosts user recordings. Sharing *styling* is different and
+  in scope: the template registry stays GitHub-federated with a static
+  CI-rendered gallery — no backend, nothing to run.

@@ -29,12 +29,21 @@ pub struct Layout {
 /// Computes the canvas layout for a terminal image of `term_w`×`term_h`
 /// pixels. `s` is the supersampling scale (all template dimensions are in
 /// logical px and multiplied here).
+/// How the canvas should be padded out beyond the window.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CanvasFit {
+    /// Minimum width/height ratio; grows (never crops) to reach it.
+    pub aspect: Option<f32>,
+    /// Exact canvas size; grows and centers to land on it precisely.
+    pub exact: Option<(u32, u32)>,
+}
+
 pub fn layout(
     tpl: &Template,
     term_w: u32,
     term_h: u32,
     s: f32,
-    aspect: Option<f32>,
+    fit: CanvasFit,
 ) -> Layout {
     let padding = tpl.padding * s;
     let inset = tpl.inset * s;
@@ -55,7 +64,7 @@ pub fn layout(
     let mut canvas_w = (win_w + inset * 2.0).ceil();
     let mut canvas_h = (win_h + inset * 2.0).ceil();
     let (mut dx, mut dy) = (0.0f32, 0.0f32);
-    if let Some(ratio) = aspect {
+    if let Some(ratio) = fit.aspect {
         // Grow (never crop) the deficient dimension and center the window.
         if canvas_w / canvas_h < ratio {
             let grown = (canvas_h * ratio).ceil();
@@ -65,6 +74,18 @@ pub fn layout(
             let grown = (canvas_w / ratio).ceil();
             dy = ((grown - canvas_h) / 2.0).floor();
             canvas_h = grown;
+        }
+    }
+    if let Some((ew, eh)) = fit.exact {
+        // Grow (never crop) to the exact target, centered. Content larger
+        // than the target keeps its computed size; the caller warns.
+        if (ew as f32) > canvas_w {
+            dx += ((ew as f32 - canvas_w) / 2.0).floor();
+            canvas_w = ew as f32;
+        }
+        if (eh as f32) > canvas_h {
+            dy += ((eh as f32 - canvas_h) / 2.0).floor();
+            canvas_h = eh as f32;
         }
     }
     // Keep encoder-friendly even dimensions.
@@ -92,9 +113,9 @@ pub fn compose_base(
     term_w: u32,
     term_h: u32,
     s: f32,
-    aspect: Option<f32>,
+    fit: CanvasFit,
 ) -> Pixmap {
-    let l = layout(tpl, term_w, term_h, s, aspect);
+    let l = layout(tpl, term_w, term_h, s, fit);
     let mut canvas = Pixmap::new(l.canvas_w, l.canvas_h).expect("canvas pixmap");
 
     draw_canvas_bg(&mut canvas, &tpl.canvas);
@@ -143,10 +164,10 @@ pub fn compose_over(
     tpl: &Template,
     term: &Pixmap,
     s: f32,
-    aspect: Option<f32>,
+    fit: CanvasFit,
 ) -> Pixmap {
     let mut canvas = Pixmap::new(1, 1).expect("pixmap");
-    compose_over_into(base, tpl, term, s, aspect, &mut canvas);
+    compose_over_into(base, tpl, term, s, fit, &mut canvas);
     canvas
 }
 
@@ -157,10 +178,10 @@ pub fn compose_over_into(
     tpl: &Template,
     term: &Pixmap,
     s: f32,
-    aspect: Option<f32>,
+    fit: CanvasFit,
     canvas: &mut Pixmap,
 ) {
-    let l = layout(tpl, term.width(), term.height(), s, aspect);
+    let l = layout(tpl, term.width(), term.height(), s, fit);
     if canvas.width() != base.width() || canvas.height() != base.height() {
         *canvas = Pixmap::new(base.width(), base.height()).expect("canvas pixmap");
     }
@@ -177,8 +198,8 @@ pub fn compose_over_into(
 
 /// One-shot compose (tests, single frames).
 pub fn compose(tpl: &Template, theme: &Theme, term: &Pixmap, s: f32) -> Pixmap {
-    let base = compose_base(tpl, theme, term.width(), term.height(), s, None);
-    compose_over(&base, tpl, term, s, None)
+    let base = compose_base(tpl, theme, term.width(), term.height(), s, CanvasFit::default());
+    compose_over(&base, tpl, term, s, CanvasFit::default())
 }
 
 fn draw_canvas_bg(canvas: &mut Pixmap, bg: &CanvasBg) {
@@ -394,8 +415,8 @@ mod tests {
     #[test]
     fn aspect_grows_and_centers_wide() {
         let tpl = builtin("glass").unwrap();
-        let base = layout(&tpl, 800, 500, 1.0, None);
-        let wide = layout(&tpl, 800, 500, 1.0, Some(16.0 / 9.0));
+        let base = layout(&tpl, 800, 500, 1.0, CanvasFit::default());
+        let wide = layout(&tpl, 800, 500, 1.0, CanvasFit { aspect: Some(16.0 / 9.0), exact: None });
         let ratio = wide.canvas_w as f32 / wide.canvas_h as f32;
         assert!((ratio - 16.0 / 9.0).abs() < 0.01, "ratio {ratio}");
         assert!(wide.canvas_w >= base.canvas_w && wide.canvas_h >= base.canvas_h, "never crops");
@@ -408,7 +429,7 @@ mod tests {
     #[test]
     fn aspect_grows_height_for_tall_targets() {
         let tpl = builtin("minimal").unwrap();
-        let l = layout(&tpl, 1200, 300, 1.0, Some(1.0));
+        let l = layout(&tpl, 1200, 300, 1.0, CanvasFit { aspect: Some(1.0), exact: None });
         assert!((l.canvas_w as f32 / l.canvas_h as f32 - 1.0).abs() < 0.01);
         let top = l.win_y;
         let bottom = l.canvas_h as f32 - (l.win_y + l.win_h);
@@ -416,10 +437,23 @@ mod tests {
     }
 
     #[test]
+    fn exact_size_pads_and_centers() {
+        let tpl = builtin("classic").unwrap();
+        let l = layout(&tpl, 800, 500, 1.0, CanvasFit { aspect: None, exact: Some((1920, 1080)) });
+        assert_eq!((l.canvas_w, l.canvas_h), (1920, 1080));
+        let left = l.win_x;
+        let right = l.canvas_w as f32 - (l.win_x + l.win_w);
+        assert!((left - right).abs() <= 2.0);
+        // Content bigger than the target never gets cropped.
+        let big = layout(&tpl, 3000, 500, 1.0, CanvasFit { aspect: None, exact: Some((1920, 1080)) });
+        assert!(big.canvas_w >= 3000);
+    }
+
+    #[test]
     fn canvas_dimensions_stay_even() {
         let tpl = builtin("classic").unwrap();
         for (w, h) in [(101, 55), (333, 217)] {
-            let l = layout(&tpl, w, h, 1.0, Some(16.0 / 9.0));
+            let l = layout(&tpl, w, h, 1.0, CanvasFit { aspect: Some(16.0 / 9.0), exact: None });
             assert_eq!(l.canvas_w % 2, 0);
             assert_eq!(l.canvas_h % 2, 0);
         }

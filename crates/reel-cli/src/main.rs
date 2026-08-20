@@ -41,6 +41,9 @@ enum Command {
         /// Canvas aspect ratio like 16:9 (grows the canvas, never crops)
         #[arg(long)]
         aspect: Option<String>,
+        /// Exact canvas size like 1920x1080 (solves the font size to fit)
+        #[arg(long)]
+        size: Option<String>,
         /// Render silent even if the .reel configures audio (webm only)
         #[arg(long)]
         no_audio: bool,
@@ -149,8 +152,8 @@ fn main() {
 
 fn run() -> Result<()> {
     match Cli::parse().command {
-        Command::Render { file, out, template, budget, scale, aspect, no_audio, quiet } => {
-            pipeline::render(&file, out, template, budget, scale, aspect, no_audio, quiet)
+        Command::Render { file, out, template, budget, scale, aspect, size, no_audio, quiet } => {
+            pipeline::render(&file, out, template, budget, scale, aspect, size, no_audio, quiet)
         }
         Command::Watch { file, out, template, serve } => watch::watch(&file, out, template, serve),
         Command::Record { out, size, command } => record::record(&out, size, command),

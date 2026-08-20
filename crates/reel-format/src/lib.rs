@@ -79,11 +79,17 @@ pub struct OutputCfg {
     pub scale: u32,
     /// Canvas aspect ratio like "16:9"; the canvas grows (never crops) to fit.
     pub aspect: Option<String>,
+    /// Exact canvas size like "1920x1080": reel solves the font size to fit
+    /// and pads (centered) to land on these dimensions precisely.
+    pub size: Option<String>,
+    /// Write captions as real subtitles too: a WebVTT sidecar next to the
+    /// output, plus an in-band text track in .webm output.
+    pub subtitles: bool,
 }
 
 impl Default for OutputCfg {
     fn default() -> Self {
-        OutputCfg { file: None, looping: true, budget: None, fps: None, scale: 2, aspect: None }
+        OutputCfg { file: None, looping: true, budget: None, fps: None, scale: 2, aspect: None, size: None, subtitles: false }
     }
 }
 
@@ -111,6 +117,8 @@ pub struct StyleCfg {
     /// macos | rounded | plain | none
     pub window: Option<String>,
     pub padding: Option<u32>,
+    /// Blink the cursor during long stills (like a real terminal). Default on.
+    pub cursor_blink: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -145,6 +153,14 @@ impl AudioCfg {
             }
         }
     }
+}
+
+/// Parses an exact canvas size like "1920x1080".
+pub fn parse_size(s: &str) -> Option<(u32, u32)> {
+    let (w, h) = s.trim().split_once(['x', 'X'])?;
+    let w: u32 = w.trim().parse().ok()?;
+    let h: u32 = h.trim().parse().ok()?;
+    ((64..=7680).contains(&w) && (64..=4320).contains(&h)).then_some((w, h))
 }
 
 /// Parses an aspect ratio like "16:9", "4:3", or "1.78" into width/height.
@@ -195,6 +211,8 @@ pub enum RawOp {
     Sound { name: String, at: TimeExpr },
     Mute { range: (TimeExpr, TimeExpr) },
     Volume { level: f64, range: (TimeExpr, TimeExpr) },
+    /// Mask every grid cell whose row text matches this regex.
+    Redact { pattern: String },
 }
 
 const INPUT_OPS: &[&str] = &[
@@ -214,6 +232,8 @@ pub struct EditProgram {
     pub edits: EditOps,
     pub visuals: Vec<VisualOp>,
     pub audio: Vec<AudioOp>,
+    /// Regex patterns whose matches get masked out of every frame.
+    pub redactions: Vec<String>,
 }
 
 impl ReelFile {
@@ -292,6 +312,7 @@ impl ReelFile {
                 RawOp::Volume { level, range: r } => {
                     p.audio.push(AudioOp::Volume { level: *level, range: range(r) })
                 }
+                RawOp::Redact { pattern } => p.redactions.push(pattern.clone()),
             }
         }
         Ok(p)
@@ -622,6 +643,7 @@ fn parse_op(name: &str, toks: &[Token], line: usize) -> Result<RawOp, FormatErro
             a.keyword("at")?;
             RawOp::Sound { name, at: a.time()? }
         }
+        "redact" => RawOp::Redact { pattern: a.string()? },
         "mute" => RawOp::Mute { range: a.time_range()? },
         "volume" => {
             let level = a

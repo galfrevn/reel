@@ -32,6 +32,8 @@ pub enum RenderError {
     Font(String),
     #[error("invalid aspect `{0}` (try 16:9, 4:3, or 1.78)")]
     BadAspect(String),
+    #[error("invalid size `{0}` (try 1920x1080)")]
+    BadSize(String),
 }
 
 #[derive(Debug, Clone)]
@@ -41,8 +43,10 @@ pub struct RenderSettings {
     /// Supersampling factor: output pixels per logical pixel.
     pub scale: f32,
     pub fps: u32,
-    /// Minimum canvas width/height ratio; the canvas pads out to reach it.
-    pub aspect: Option<f32>,
+    /// Aspect/exact-size canvas padding.
+    pub fit: chrome::CanvasFit,
+    /// Blink the cursor during long stills.
+    pub cursor_blink: bool,
 }
 
 /// Layering per the spec: built-in defaults → template → `[style]` overrides.
@@ -89,13 +93,20 @@ pub fn settings_from_config(cfg: &ReelConfig) -> Result<(RenderSettings, Vec<Str
         ),
         None => None,
     };
+    let exact = match &cfg.output.size {
+        Some(v) => Some(
+            reel_format::parse_size(v).ok_or_else(|| RenderError::BadSize(v.clone()))?,
+        ),
+        None => None,
+    };
     Ok((
         RenderSettings {
             template: tpl,
             theme,
             scale: cfg.output.scale.clamp(1, 4) as f32,
             fps: cfg.output.fps.unwrap_or(30).clamp(1, 120),
-            aspect,
+            fit: chrome::CanvasFit { aspect, exact },
+            cursor_blink: cfg.style.cursor_blink.unwrap_or(true),
         },
         warnings,
     ))
@@ -149,6 +160,28 @@ impl Renderer {
         Ok(warning.into_iter().collect())
     }
 
+    /// When an exact canvas size is requested, solve the font size so the
+    /// grid fills it as closely as possible without overflowing — no more
+    /// hand-tuning font_size to land on 1920x1080.
+    pub fn fit_exact(&mut self, cols: u16, rows: u16) {
+        let Some((tw, th)) = self.settings.fit.exact else { return };
+        let s = self.settings.scale;
+        // Chrome overhead at zero terminal size.
+        let l0 = chrome::layout(&self.settings.template, 0, 0, s, chrome::CanvasFit::default());
+        let (ow, oh) = (l0.canvas_w as f32, l0.canvas_h as f32);
+        // Cell metrics scale linearly with font size; measure at 100px.
+        let m = self.raster.fonts.cell_metrics(100.0, self.settings.template.line_height);
+        let (kw, kh) = (m.cell_w / 100.0, m.cell_h / 100.0);
+        let fs_w = (tw as f32 - ow) / (cols as f32 * kw * s);
+        let fs_h = (th as f32 - oh) / (rows as f32 * kh * s);
+        // Tiny margin absorbs per-cell rounding so we never overflow.
+        let fs = fs_w.min(fs_h) * 0.995;
+        if fs.is_finite() && fs >= 4.0 {
+            self.settings.template.font_size = fs;
+            self.chrome_base = None;
+        }
+    }
+
     fn base_font_px(&self) -> f32 {
         self.settings.template.font_size * self.settings.scale
     }
@@ -168,7 +201,7 @@ impl Renderer {
     /// Full output frame size (canvas including chrome).
     pub fn canvas_size(&mut self, cols: u16, rows: u16) -> (u32, u32) {
         let (tw, th) = self.term_size(cols, rows);
-        let l = chrome::layout(&self.settings.template, tw, th, self.settings.scale, self.settings.aspect);
+        let l = chrome::layout(&self.settings.template, tw, th, self.settings.scale, self.settings.fit);
         (l.canvas_w, l.canvas_h)
     }
 
@@ -246,7 +279,7 @@ impl Renderer {
 
         let key = (term.width(), term.height());
         if self.chrome_base.as_ref().map(|(k, _)| *k) != Some(key) {
-            let base = chrome::compose_base(&tpl, &theme, term.width(), term.height(), s, self.settings.aspect);
+            let base = chrome::compose_base(&tpl, &theme, term.width(), term.height(), s, self.settings.fit);
             self.chrome_base = Some((key, base));
         }
         let base = &self.chrome_base.as_ref().unwrap().1;
@@ -255,7 +288,7 @@ impl Renderer {
             &tpl,
             &self.term_scratch,
             s,
-            self.settings.aspect,
+            self.settings.fit,
             &mut self.canvas_scratch,
         );
 

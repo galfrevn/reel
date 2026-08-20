@@ -105,6 +105,7 @@ fn render_frames(loaded: &Loaded, cfg: &ReelConfig, quiet: bool) -> Result<(Vec<
     let (settings, mut warnings) = settings_from_config(cfg)?;
     let fps = settings.fps;
     let (mut renderer, font_warnings) = Renderer::new(settings)?;
+    renderer.fit_exact(loaded.cast.cols(), loaded.cast.rows());
     warnings.extend(font_warnings);
     let frames = plan(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps);
     if !quiet {
@@ -135,6 +136,7 @@ pub fn render(
     budget: Option<String>,
     scale: Option<u32>,
     aspect: Option<String>,
+    size: Option<String>,
     no_audio: bool,
     quiet: bool,
 ) -> Result<()> {
@@ -145,6 +147,9 @@ pub fn render(
     }
     if aspect.is_some() {
         cfg.output.aspect = aspect;
+    }
+    if size.is_some() {
+        cfg.output.size = size;
     }
     if let Some(b) = budget {
         cfg.output.budget = Some(b);
@@ -388,6 +393,7 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
             print_warnings(&font_warns, quiet);
         }
         let r = renderer.as_mut().unwrap();
+        r.fit_exact(loaded.cast.cols(), loaded.cast.rows());
         let plans = plan(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps_used);
         if i == 0 && !quiet {
             eprintln!(
@@ -521,6 +527,7 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
             print_warnings(&font_warns, quiet);
         }
         let r = renderer.as_mut().unwrap();
+        r.fit_exact(loaded.cast.cols(), loaded.cast.rows());
         let plans = plan(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps_used);
         if i == 0 && !quiet {
             eprintln!(
@@ -605,6 +612,7 @@ pub fn shot(path: &Path, at: &str, out: Option<PathBuf>, template: Option<String
     let (settings, _) = settings_from_config(&cfg)?;
     let fps = settings.fps;
     let (mut renderer, _) = Renderer::new(settings)?;
+    renderer.fit_exact(loaded.cast.cols(), loaded.cast.rows());
     let frames = plan(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps);
     let frame = frames
         .iter()
