@@ -1,10 +1,27 @@
-# reel
+<p align="center">
+  <img src="documentation/assets/logo.svg" width="140" alt="reel logo" />
+</p>
 
-> Your terminal demo, edited like video.
+<h1 align="center">reel</h1>
+
+<p align="center"><em>Your terminal demo, edited like video.</em></p>
+
+<p align="center">
+  <a href="https://github.com/galfrevn/reel/actions/workflows/ci.yml"><img src="https://github.com/galfrevn/reel/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://galfrevn.github.io/reel/"><img src="https://img.shields.io/badge/templates-gallery-7C77AB" alt="Template gallery" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license" /></a>
+</p>
 
 Record a terminal session once, then treat it as a timeline you can cut,
 speed-ramp, zoom, caption, restyle, and score with sound — re-rendering in
 milliseconds without ever re-running the underlying program.
+
+<p align="center">
+  <img src="documentation/assets/hero.gif" alt="A terminal recording rendered by reel: glass window, keystroke chips, captions, a speed ramp over the compile wait and a zoom on the test results" />
+</p>
+
+<p align="center"><sub>This GIF was cut, sped up, zoomed, captioned, and rendered by reel itself
+— from <a href="documentation/assets/hero.reel">six lines of edit script</a>.</sub></p>
 
 ## Install
 
@@ -13,7 +30,7 @@ curl -fsSL https://raw.githubusercontent.com/galfrevn/reel/main/setup.sh | bash
 ```
 
 Grabs a prebuilt binary when one exists for your platform, otherwise builds
-from source with cargo.
+from source with cargo. One binary — no `ttyd`, no `ffmpeg`.
 
 ## Quick start
 
@@ -56,30 +73,52 @@ sound   "success" at 41s
 freeze  last 1.5s
 ```
 
+Because edits apply to a frozen recording, iterating costs nothing:
+`reel watch` re-renders on every save, and timestamps always refer to the
+source clock, so a `caption` stays glued to its moment even after you `cut`
+footage before it.
+
 ## What you get
 
 - **Timeline editing** — `trim`, `cut`, `speed`, `zoom`, `caption`,
-  `highlight`, `freeze`… applied to a frozen recording, so iterating costs
-  nothing (`reel watch` re-renders on save). Press `Ctrl+]` while recording
-  to drop markers, then edit by name: `cut @1..@2`.
+  `highlight`, `freeze`… Press `Ctrl+]` while recording to drop markers,
+  then edit by name: `cut @1..@2`.
 - **Keystroke overlay** — `keys on` shows what you typed as screenkey-style
   chips, straight from the recorded input; `redact "pattern"` masks secrets
   before they ship (renders warn about emails/tokens they spot).
 - **Templates that look designed** — `glass`, `minimal`, `classic`, `geist`,
-  `paper`, `crt`; bring your own as TOML or install packs from GitHub.
-  Themes import from base16, Alacritty, and iTerm2.
-- **A community registry** — [browse every template as a live
-  preview](https://galfrevn.github.io/reel/), `reel template search` finds
-  looks published by others, `reel template try owner/repo/name` previews one
-  against a bundled demo recording before installing anything. Publishing is
-  a [PR with a TOML file](registry/README.md) — no accounts, no
-  infrastructure.
+  `paper`, `crt`, `aurora` built in; bring your own as TOML or install packs
+  from GitHub. Themes import from base16, Alacritty, and iTerm2.
 - **Size budgets** — `budget = "800kb"` and the encoder walks a predictable
   degradation ladder, reporting every step.
 - **Sound without audio files** — keystrokes, UI cues, and agent-thinking
   beds synthesized procedurally into WebM/Opus; `speed 5x` drops key sounds
   instead of chipmunking them.
-- **Single binary** — no `ttyd`, no `ffmpeg`.
+- **GIF, WebM, APNG, PNG** — routed by the output extension; `reel shot`
+  grabs a single styled frame for screenshots.
+
+## The same recording, in every look
+
+Templates are the complete visual identity — window chrome, wallpaper,
+shadows, prompt, even motion. These four frames come from the same cast:
+
+| | |
+|:---:|:---:|
+| ![crt template](documentation/assets/template-crt.png) `crt` | ![vercel template](documentation/assets/template-vercel.png) `vercel` |
+| ![candy template](documentation/assets/template-candy.png) `candy` | ![paper template](documentation/assets/template-paper.png) `paper` |
+
+Browse **every template as a live preview** in the
+[community gallery](https://galfrevn.github.io/reel/), then:
+
+```sh
+reel template search neon          # find looks published by others
+reel template try owner/repo/name  # preview against a bundled demo, no install
+reel template add owner/repo/name  # keep it
+```
+
+Publishing your own is a [PR with a TOML file](registry/README.md) — no
+accounts, no infrastructure. Sounds work the same way: `reel audio search`,
+`reel audio try`, `reel audio publish`.
 
 ## Let your agent do it
 

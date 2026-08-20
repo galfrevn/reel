@@ -1,4 +1,5 @@
 target/
 *.gif
+!documentation/assets/*.gif
 .DS_Store
 .claude/worktrees/

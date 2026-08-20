@@ -1,0 +1,20 @@
+---
+[source]
+cast = "../../crates/reel-cli/assets/demo.cast"
+
+[template]
+name = "glass"
+
+[output]
+file   = "hero.gif"
+budget = "1500kb"
+fps    = 30
+scale  = 2
+---
+
+keys    on
+caption "Record once — edit like video" at 0.3s for 2.4s pos=top
+speed   2x from 1.9s to 3.5s
+zoom    1.5x at (23,10) from 4.0s to 6.2s
+caption "cuts, zooms, captions, speed ramps — all declarative" at 7.6s for 2.8s pos=top
+freeze  last 1.2s
