@@ -614,6 +614,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "reel-audio"
+version = "0.1.0"
+dependencies = [
+ "reel-timeline",
+ "thiserror",
+]
+
+[[package]]
 name = "reel-cast"
 version = "0.1.0"
 dependencies = [

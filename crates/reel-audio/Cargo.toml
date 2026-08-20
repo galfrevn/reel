@@ -1,0 +1,11 @@
+[package]
+name = "reel-audio"
+description = "Procedural audio for reel: recipe synthesis, event planning, mixing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+reel-timeline = { workspace = true }
+thiserror = { workspace = true }
