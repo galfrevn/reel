@@ -11,3 +11,5 @@ reel-cast = { workspace = true }
 alacritty_terminal = { version = "0.26.0", default-features = false }
 bitflags = "2"
 thiserror = { workspace = true }
+regex-lite = "0.1.9"
+png = "0.18.1"

@@ -1,5 +1,10 @@
+mod net;
 mod pipeline;
+mod publish;
 mod record;
+mod registry;
+mod script;
+mod suggest;
 mod templates;
 mod themes;
 mod watch;
@@ -29,7 +34,7 @@ enum Command {
         /// Output file; extension picks the format (.gif, .webm, .png, .txt)
         #[arg(long, short)]
         out: Option<PathBuf>,
-        /// Template override (minimal, glass, classic, paper)
+        /// Template override: a name (see `reel templates`) or a .toml path
         #[arg(long)]
         template: Option<String>,
         /// Size budget like 800kb or 2mb; the encoder degrades to fit
@@ -41,6 +46,9 @@ enum Command {
         /// Canvas aspect ratio like 16:9 (grows the canvas, never crops)
         #[arg(long)]
         aspect: Option<String>,
+        /// Exact canvas size like 1920x1080 (solves the font size to fit)
+        #[arg(long)]
+        size: Option<String>,
         /// Render silent even if the .reel configures audio (webm only)
         #[arg(long)]
         no_audio: bool,
@@ -58,6 +66,17 @@ enum Command {
         /// Serve a live preview at http://127.0.0.1:PORT/
         #[arg(long, value_name = "PORT", num_args = 0..=1, default_missing_value = "4171")]
         serve: Option<u16>,
+    },
+    /// Execute a script-mode .reel (capture the program live) and render it
+    Run {
+        /// A .reel with script ops (run/type/key/wait_text/…), no [source]
+        file: PathBuf,
+        /// Only capture; skip rendering
+        #[arg(long)]
+        no_render: bool,
+        /// Suppress progress output
+        #[arg(long, short)]
+        quiet: bool,
     },
     /// Record a terminal session to a .cast (+ .reelmeta input sidecar)
     Record {
@@ -84,9 +103,20 @@ enum Command {
     },
     /// Summarize a .reel file: timeline, markers, size estimate
     Inspect { file: PathBuf },
+    /// Analyze a recording and draft the edit script (trims, speed ramps)
+    Suggest {
+        /// A .cast recording
+        file: PathBuf,
+        /// Write a complete .reel file instead of printing the ops
+        #[arg(long, value_name = "FILE.reel")]
+        write: Option<PathBuf>,
+        /// Template for the written file
+        #[arg(long, default_value = "glass")]
+        template: String,
+    },
     /// Scaffold a new .reel file
     Init {
-        /// Template to reference (minimal, glass, classic, paper)
+        /// Template to reference (see `reel templates` for the list)
         #[arg(default_value = "glass")]
         template: String,
         #[arg(long, short, default_value = "demo.reel")]
@@ -116,6 +146,31 @@ enum TemplateAction {
     Show { name: String },
     /// Install templates from a .toml file or a GitHub repo (owner/repo[/name])
     Add { source: String },
+    /// Search the community template registry
+    Search {
+        /// Match against names, descriptions, tags, and repos; empty lists all
+        query: Option<String>,
+    },
+    /// Preview a template against the bundled demo cast, without installing
+    Try {
+        /// A template name, a local .toml file, or owner/repo/name on GitHub
+        source: String,
+    },
+    /// Publish a template to the community registry (validate → preview →
+    /// scaffold → PR via gh)
+    Publish {
+        /// The template .toml to publish
+        file: PathBuf,
+        /// Tags shown in search and the gallery (repeatable)
+        #[arg(long)]
+        tag: Vec<String>,
+        /// Stop after scaffolding; print the index entry instead of a PR
+        #[arg(long)]
+        no_pr: bool,
+        /// Skip rendering the local preview
+        #[arg(long)]
+        no_preview: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -124,7 +179,11 @@ enum ThemeAction {
     List,
     /// Import a theme file (base16 .yaml, alacritty .toml/.yml, iTerm2 .itermcolors)
     Import {
-        file: PathBuf,
+        /// Theme file to import; omit when using --from
+        file: Option<PathBuf>,
+        /// Import straight from an installed terminal: iterm, kitty, ghostty
+        #[arg(long, value_name = "TERMINAL", conflicts_with = "file")]
+        from: Option<String>,
         /// Name to install it under (defaults to the scheme/file name)
         #[arg(long)]
         name: Option<String>,
@@ -149,13 +208,33 @@ fn main() {
 
 fn run() -> Result<()> {
     match Cli::parse().command {
-        Command::Render { file, out, template, budget, scale, aspect, no_audio, quiet } => {
-            pipeline::render(&file, out, template, budget, scale, aspect, no_audio, quiet)
+        Command::Render { file, out, template, budget, scale, aspect, size, no_audio, quiet } => {
+            pipeline::render(&file, out, template, budget, scale, aspect, size, no_audio, quiet)
         }
         Command::Watch { file, out, template, serve } => watch::watch(&file, out, template, serve),
+        Command::Run { file, no_render, quiet } => {
+            let text = std::fs::read_to_string(&file)
+                .with_context(|| format!("reading {}", file.display()))?;
+            let parsed = reel_format::ReelFile::parse(&text)?;
+            if parsed.config.source.is_some() {
+                bail!(
+                    "{} is an edit-mode file ([source].cast) — use `reel render`",
+                    file.display()
+                );
+            }
+            let cast = script::capture(&file, &parsed, quiet)?;
+            if no_render {
+                println!("{}", cast.display());
+                return Ok(());
+            }
+            pipeline::render_with_source(&file, &cast, quiet)
+        }
         Command::Record { out, size, command } => record::record(&out, size, command),
         Command::Shot { file, at, out, template } => pipeline::shot(&file, &at, out, template),
         Command::Inspect { file } => pipeline::inspect(&file),
+        Command::Suggest { file, write, template } => {
+            suggest::suggest(&file, write.as_deref(), &template)
+        }
         Command::Init { template, out } => init(&template, &out),
         Command::Templates | Command::Template { action: TemplateAction::List } => {
             templates::list();
@@ -163,13 +242,24 @@ fn run() -> Result<()> {
         }
         Command::Template { action: TemplateAction::Show { name } } => templates::show(&name),
         Command::Template { action: TemplateAction::Add { source } } => templates::add(&source),
+        Command::Template { action: TemplateAction::Search { query } } => {
+            registry::search(query.as_deref())
+        }
+        Command::Template { action: TemplateAction::Try { source } } => {
+            templates::try_template(&source)
+        }
+        Command::Template { action: TemplateAction::Publish { file, tag, no_pr, no_preview } } => {
+            publish::publish(&file, &tag, no_pr, no_preview)
+        }
         Command::Themes | Command::Theme { action: ThemeAction::List } => {
             list_themes();
             Ok(())
         }
-        Command::Theme { action: ThemeAction::Import { file, name } } => {
-            themes::import(&file, name)
-        }
+        Command::Theme { action: ThemeAction::Import { file, from, name } } => match (file, from) {
+            (Some(f), None) => themes::import(&f, name),
+            (None, Some(t)) => themes::import_from_terminal(&t, name),
+            _ => bail!("pass a theme file or --from iterm|kitty|ghostty"),
+        },
     }
 }
 

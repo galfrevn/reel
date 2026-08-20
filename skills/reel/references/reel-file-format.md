@@ -40,6 +40,12 @@ padding     = 48
 
 [output]
 aspect = "16:9"          # optional: grow (never crop) the canvas to a ratio; window stays centered
+size = "1920x1080"       # optional: exact canvas pixels; reel solves the font size to fit
+subtitles = true         # optional: captions also become a .vtt sidecar + WebM text track
+
+[terminal]               # script mode only: PTY geometry for `reel run`
+cols = 200
+rows = 50
 
 [audio]                  # rendered into .webm output only; ignored for .gif
 enabled   = true         # optional; defaults to on when any audio key or sound op is present
@@ -94,6 +100,19 @@ each other; `trim` must lie inside the recording. Errors name the line number.
 Zoom coordinates are **grid cells** (column, row), not pixels — they survive
 font-size and template changes. Text is re-rasterized at the zoomed size, so
 it stays sharp.
+
+### Redaction
+
+`redact "REGEX"` masks every match across every frame (all formats,
+including .txt dumps). Renders warn about emails/tokens/opaque ids they
+spot; add redact ops until the warnings stop.
+
+### Script ops (files without [source]; run with `reel run`)
+
+`run "cmd"` (first), `type "text"`, `key enter|esc|tab|up|ctrl+c|…`,
+`enter`, `sleep 2s`, `wait_text "needle" [timeout 30s]`,
+`wait_idle 2s [timeout 60s]`. Edit ops in the same file apply to the
+capture afterward.
 
 ### Audio ops (heard in .webm output; silently ignored in .gif)
 

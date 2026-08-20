@@ -205,9 +205,15 @@ pub fn parse_window_style(s: &str) -> Option<WindowStyle> {
 // User templates: TOML files in the templates dir (`reel template add`)
 // ---------------------------------------------------------------------------
 
+/// The template TOML schema this reel reads and writes. Bump it when a
+/// change would make older reels misrender a template (not merely ignore a
+/// field) — third-party templates in the wild check against this.
+pub const SCHEMA: u32 = 1;
+
 #[derive(serde::Deserialize, serde::Serialize, Default)]
 #[serde(deny_unknown_fields, default)]
 struct TemplateFile {
+    schema: Option<u32>,
     name: Option<String>,
     description: Option<String>,
     theme: Option<String>,
@@ -262,7 +268,19 @@ struct CrtFile {
 
 /// Parses a user template TOML. Unset fields inherit from `minimal`.
 pub fn from_toml(text: &str, fallback_name: &str) -> Result<Template, String> {
-    let f: TemplateFile = toml::from_str(text).map_err(|e| e.to_string())?;
+    // The schema gate must fire before field validation: a schema-2 template
+    // will have fields `deny_unknown_fields` rejects, and "upgrade reel"
+    // beats "unknown field `wobble`" as the error.
+    let value: toml::Value = toml::from_str(text).map_err(|e| e.to_string())?;
+    if let Some(s) = value.get("schema").and_then(|v| v.as_integer()) {
+        if s > SCHEMA as i64 {
+            return Err(format!(
+                "template schema {s} is newer than this reel understands \
+                 (schema {SCHEMA}) — upgrade reel"
+            ));
+        }
+    }
+    let f: TemplateFile = value.try_into().map_err(|e: toml::de::Error| e.to_string())?;
     let mut t = builtin("minimal").expect("minimal exists");
     // Dimensions inherit sensible defaults; decorations are strictly opt-in
     // (an absent `border` must mean "no border", not "minimal's border").
@@ -341,6 +359,7 @@ pub fn to_toml(t: &Template) -> String {
         }
     };
     let f = TemplateFile {
+        schema: Some(SCHEMA),
         name: Some(t.name.clone()),
         description: (!t.description.is_empty()).then(|| t.description.clone()),
         theme: Some(t.theme.clone()),
@@ -387,7 +406,16 @@ pub fn to_toml(t: &Template) -> String {
 }
 
 /// Resolves a template name: built-ins first, then the user templates dir.
+/// Anything that looks like a path to a `.toml` file loads directly — so
+/// `--template ./my.toml` works without installing, which is what
+/// `reel template try` builds on.
 pub fn lookup(name: &str) -> Option<Template> {
+    if std::path::Path::new(name).extension().is_some_and(|e| e == "toml") {
+        let path = std::path::Path::new(name);
+        let stem = path.file_stem()?.to_str()?.to_string();
+        let text = std::fs::read_to_string(path).ok()?;
+        return from_toml(&text, &stem).ok();
+    }
     if let Some(t) = builtin(name) {
         return Some(t);
     }
@@ -455,5 +483,34 @@ mod tests {
     #[test]
     fn unknown_keys_are_rejected() {
         assert!(from_toml("wobble = 3\n", "x").is_err());
+    }
+
+    #[test]
+    fn current_and_older_schemas_are_accepted() {
+        assert!(from_toml(&format!("schema = {SCHEMA}\n"), "x").is_ok());
+        assert!(from_toml("theme = \"tokyo-night\"\n", "x").is_ok(), "absent schema means 1");
+    }
+
+    #[test]
+    fn newer_schema_says_upgrade_even_with_unknown_fields() {
+        let err = from_toml("schema = 99\nwobble = 3\n", "x").unwrap_err();
+        assert!(err.contains("upgrade reel"), "got: {err}");
+    }
+
+    #[test]
+    fn to_toml_stamps_the_schema() {
+        let text = to_toml(&builtin("minimal").unwrap());
+        assert!(text.contains(&format!("schema = {SCHEMA}")));
+    }
+
+    #[test]
+    fn lookup_loads_a_toml_path_directly() {
+        let dir = std::env::temp_dir().join("reel-template-path-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("neon.toml");
+        std::fs::write(&path, "theme = \"phosphor\"\n").unwrap();
+        let t = lookup(path.to_str().unwrap()).unwrap();
+        assert_eq!(t.name, "neon");
+        assert_eq!(t.theme, "phosphor");
     }
 }

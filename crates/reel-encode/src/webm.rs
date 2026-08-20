@@ -24,10 +24,12 @@ const CLUSTER: u32 = 0x1F43_B675;
 pub struct Block {
     /// Presentation time in ms.
     pub pts_ms: i64,
-    /// 1-based track: 1 = video, 2 = audio.
+    /// 1-based track: 1 = video, 2 = audio, 3 = subtitles.
     pub track: u8,
     pub keyframe: bool,
     pub data: Vec<u8>,
+    /// Display duration in ms; subtitle blocks need one (BlockGroup).
+    pub duration_ms: Option<u64>,
 }
 
 pub struct VideoTrack {
@@ -40,6 +42,13 @@ pub struct AudioTrack {
     pub sample_rate: u32,
     /// Samples the decoder must drop at the start (0 for reel's encoder).
     pub pre_skip: u16,
+}
+
+/// A subtitle cue for the optional text track.
+pub struct Cue {
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub text: String,
 }
 
 fn write_id(out: &mut Vec<u8>, id: u32) {
@@ -121,7 +130,7 @@ fn opus_head(a: &AudioTrack) -> Vec<u8> {
     h
 }
 
-fn tracks(video: &VideoTrack, audio: Option<&AudioTrack>) -> Vec<u8> {
+fn tracks(video: &VideoTrack, audio: Option<&AudioTrack>, subtitles: bool) -> Vec<u8> {
     let mut body = Vec::new();
     {
         let mut t = Vec::new();
@@ -135,6 +144,15 @@ fn tracks(video: &VideoTrack, audio: Option<&AudioTrack>) -> Vec<u8> {
         el_uint(&mut v, 0xBA, video.height as u64); // PixelHeight
         element(&mut t, 0xE0, &v); // Video
         element(&mut body, 0xAE, &t); // TrackEntry
+    }
+    if subtitles {
+        let mut t = Vec::new();
+        el_uint(&mut t, 0xD7, 3);
+        el_uint(&mut t, 0x73C5, 3);
+        el_uint(&mut t, 0x83, 0x11); // TrackType: subtitle
+        el_uint(&mut t, 0x9C, 0);
+        el_string(&mut t, 0x86, "S_TEXT/WEBVTT");
+        element(&mut body, 0xAE, &t);
     }
     if let Some(a) = audio {
         let mut t = Vec::new();
@@ -167,7 +185,20 @@ fn simple_block(b: &Block, cluster_ts: i64) -> Vec<u8> {
     body.push(if b.keyframe { 0x80 } else { 0x00 });
     body.extend_from_slice(&b.data);
     let mut out = Vec::new();
-    element(&mut out, 0xA3, &body);
+    match b.duration_ms {
+        // Subtitles carry a duration: BlockGroup { Block, BlockDuration }.
+        Some(dur) => {
+            let mut group = Vec::new();
+            // Block (0xA1) shares SimpleBlock's layout minus the flags bit.
+            let mut blk = body;
+            blk[3] = 0; // Block has no flags bit
+
+            element(&mut group, 0xA1, &blk);
+            el_uint(&mut group, 0x9B, dur);
+            element(&mut out, 0xA0, &group);
+        }
+        None => element(&mut out, 0xA3, &body),
+    }
     out
 }
 
@@ -178,9 +209,29 @@ pub fn mux(
     mut blocks: Vec<Block>,
     duration_ms: f64,
 ) -> Vec<u8> {
+    mux_with_cues(video, audio, &[], &mut blocks, duration_ms)
+}
+
+pub fn mux_with_cues(
+    video: &VideoTrack,
+    audio: Option<&AudioTrack>,
+    cues: &[Cue],
+    blocks: &mut Vec<Block>,
+    duration_ms: f64,
+) -> Vec<u8> {
+    for c in cues {
+        blocks.push(Block {
+            pts_ms: c.start_ms,
+            track: 3,
+            keyframe: true,
+            data: c.text.clone().into_bytes(),
+            duration_ms: Some((c.end_ms - c.start_ms).max(1) as u64),
+        });
+    }
     // Stable interleave by pts; video before audio at equal timestamps so a
     // seek lands on the frame first.
     blocks.sort_by(|a, b| a.pts_ms.cmp(&b.pts_ms).then(a.track.cmp(&b.track)));
+    let blocks: &[Block] = blocks;
 
     let mut segment = Vec::new();
     {
@@ -191,7 +242,7 @@ pub fn mux(
         el_string(&mut info, 0x5741, "reel"); // WritingApp
         element(&mut segment, INFO, &info);
     }
-    segment.extend_from_slice(&tracks(video, audio));
+    segment.extend_from_slice(&tracks(video, audio, !cues.is_empty()));
 
     let mut i = 0usize;
     while i < blocks.len() {
@@ -230,7 +281,7 @@ mod tests {
     }
 
     fn block(pts_ms: i64, track: u8, keyframe: bool) -> Block {
-        Block { pts_ms, track, keyframe, data: vec![0xAB; 8] }
+        Block { pts_ms, track, keyframe, data: vec![0xAB; 8], duration_ms: None }
     }
 
     #[test]

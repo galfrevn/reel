@@ -1,0 +1,58 @@
+name: gallery
+
+# Renders every template — builtin and registry — against the canonical demo
+# cast and publishes the grid to GitHub Pages. The registry's storefront.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "registry/**"
+      - "templates/**"
+      - "crates/reel-cli/assets/demo.cast"
+      - ".github/workflows/gallery.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install libvpx + fonts
+        run: sudo apt-get update && sudo apt-get install -y libvpx-dev libclang-dev fonts-dejavu fonts-noto-core fonts-powerline
+
+      - name: Build reel
+        run: cargo build --release -p reel-cli
+
+      - name: Render the gallery
+        run: python3 registry/build_gallery.py --reel target/release/reel --out _site
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

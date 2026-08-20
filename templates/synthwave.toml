@@ -1,0 +1,24 @@
+schema = 1
+name = "synthwave"
+description = "Neon gradient, soft glow, retro without the scanline grit"
+theme = "tokyo-night"
+window = "rounded"
+titlebar = "none"
+corner_radius = 14.0
+padding = 26.0
+inset = 56.0
+
+[canvas.gradient]
+angle = 135.0
+from = "#1a0b2e"
+to = "#3d1d6b"
+
+[shadow]
+blur = 42.0
+opacity = 0.5
+offset_y = 14.0
+
+[crt]
+scanline = 0.0
+glow = 0.35
+vignette = 0.15
