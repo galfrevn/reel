@@ -182,8 +182,8 @@ pub fn render(
         .map(str::to_ascii_lowercase)
         .unwrap_or_default();
 
-    match ext.as_str() {
-        "gif" => render_gif(&loaded, cfg, &out_path, quiet),
+    let result = match ext.as_str() {
+        "gif" => render_gif(&loaded, cfg.clone(), &out_path, quiet),
         "png" => {
             let (frames, warns) = render_frames(&loaded, &cfg, quiet)?;
             print_warnings(&warns, quiet);
@@ -200,12 +200,48 @@ pub fn render(
             std::fs::write(&out_path, text)?;
             done(&out_path, quiet)
         }
-        "webm" => render_webm(&loaded, cfg, &out_path, quiet),
+        "webm" => render_webm(&loaded, cfg.clone(), &out_path, quiet),
         "mp4" => bail!(
             "mp4 is deferred (H.264 licensing) — render a .webm, or use .gif for READMEs"
         ),
         other => bail!("unsupported output extension `.{other}` (use .gif, .webm, .png, or .txt)"),
+    };
+    if result.is_ok() && cfg.output.subtitles {
+        let vtt_path = out_path.with_extension("vtt");
+        std::fs::write(&vtt_path, render_vtt(&caption_cues(&loaded)))?;
+        if !quiet {
+            eprintln!("{}: WebVTT captions sidecar", vtt_path.display());
+        }
     }
+    result
+}
+
+/// Caption windows in output time: (start, end, text).
+fn caption_cues(loaded: &Loaded) -> Vec<(f64, f64, String)> {
+    loaded
+        .visuals
+        .iter()
+        .filter_map(|v| match v {
+            VisualOp::Caption { text, at, dur, .. } => {
+                let start = loaded.timeline.project_snapped(*at);
+                let end = (start + dur).min(loaded.timeline.out_duration());
+                (end > start).then(|| (start, end, text.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn render_vtt(cues: &[(f64, f64, String)]) -> String {
+    let ts = |t: f64| {
+        let ms = (t * 1000.0).round() as u64;
+        format!("{:02}:{:02}:{:02}.{:03}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000)
+    };
+    let mut out = String::from("WEBVTT\n\n");
+    for (start, end, text) in cues {
+        out.push_str(&format!("{} --> {}\n{}\n\n", ts(*start), ts(*end), text));
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -429,7 +465,19 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
         render_each(r, &plans, &loaded.snapshots, |rgba, w, h, dur| {
             encoder.push(rgba, w, h, dur).map_err(Into::into)
         })?;
-        let report = encoder.finish(audio.as_deref())?;
+        let cues: Vec<reel_encode::webm::Cue> = if cfg.output.subtitles {
+            caption_cues(loaded)
+                .into_iter()
+                .map(|(start, end, text)| reel_encode::webm::Cue {
+                    start_ms: (start * 1000.0).round() as i64,
+                    end_ms: (end * 1000.0).round() as i64,
+                    text,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let report = encoder.finish_with_cues(audio.as_deref(), &cues)?;
         let size = report.bytes.len() as u64;
         let fits = budget_bytes.map(|b| size <= b).unwrap_or(true);
         if fits || i == ladder.len() - 1 {

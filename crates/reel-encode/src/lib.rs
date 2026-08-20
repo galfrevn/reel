@@ -138,7 +138,17 @@ impl WebmEncoder {
         Ok(())
     }
 
-    pub fn finish(mut self, audio: Option<&[f32]>) -> Result<WebmReport, EncodeError> {
+    pub fn finish(self, audio: Option<&[f32]>) -> Result<WebmReport, EncodeError> {
+        self.finish_with_cues(audio, &[])
+    }
+
+    /// Like [`finish`](Self::finish), embedding caption cues as an in-band
+    /// S_TEXT/WEBVTT subtitle track (players like mpv/VLC show them).
+    pub fn finish_with_cues(
+        mut self,
+        audio: Option<&[f32]>,
+        cues: &[webm::Cue],
+    ) -> Result<WebmReport, EncodeError> {
         if self.frame_idx == 0 {
             return Err(EncodeError::NoFrames);
         }
@@ -157,10 +167,11 @@ impl WebmEncoder {
             sample_rate: opus::OPUS_SAMPLE_RATE,
             pre_skip: 0,
         };
-        let bytes = webm::mux(
+        let bytes = webm::mux_with_cues(
             &video_track,
             has_audio.then_some(&audio_track),
-            self.blocks,
+            cues,
+            &mut self.blocks,
             self.clock_s * 1000.0,
         );
         Ok(WebmReport {

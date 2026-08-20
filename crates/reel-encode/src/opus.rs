@@ -35,6 +35,7 @@ pub fn encode_opus(samples: &[f32]) -> Result<Vec<Block>, EncodeError> {
             track: 2,
             keyframe: true, // every Opus packet is independently decodable
             data: out[..n].to_vec(),
+            duration_ms: None,
         });
     }
     Ok(blocks)

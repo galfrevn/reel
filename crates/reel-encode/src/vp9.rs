@@ -165,6 +165,7 @@ impl Vp9Encoder {
                     track: 1,
                     keyframe: f.flags & VPX_FRAME_IS_KEY != 0,
                     data,
+                    duration_ms: None,
                 });
             }
         }

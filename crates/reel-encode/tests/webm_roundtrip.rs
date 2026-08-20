@@ -101,6 +101,27 @@ fn cfr_duplicates_stills_on_a_fixed_clock() {
 }
 
 #[test]
+fn subtitle_cues_become_a_text_track() {
+    use reel_encode::{webm::Cue, WebmEncoder};
+    let frames = vec![gradient_frame(64, 64, 0, 1.0), gradient_frame(64, 64, 90, 1.0)];
+    let mut enc = WebmEncoder::new(64, 64, &WebmOptions::default()).unwrap();
+    for f in &frames {
+        enc.push(&f.data, f.width, f.height, f.duration_s).unwrap();
+    }
+    let cues = [Cue { start_ms: 100, end_ms: 900, text: "hola".into() }];
+    let report = enc.finish_with_cues(None, &cues).unwrap();
+
+    let dir = std::env::temp_dir().join("reel-webm-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("subs.webm");
+    std::fs::write(&path, &report.bytes).unwrap();
+    let mkv = matroska::open(&path).unwrap();
+    assert_eq!(mkv.tracks.len(), 2);
+    assert!(mkv.tracks.iter().any(|t| t.codec_id == "S_TEXT/WEBVTT"), "{:?}",
+        mkv.tracks.iter().map(|t| t.codec_id.clone()).collect::<Vec<_>>());
+}
+
+#[test]
 fn output_is_deterministic() {
     let frames = vec![gradient_frame(80, 60, 10, 0.2), gradient_frame(80, 60, 60, 0.2)];
     let audio = beep(0.4);
