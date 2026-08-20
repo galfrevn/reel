@@ -38,6 +38,9 @@ line_height = 1.4
 window      = "macos"    # macos | rounded | plain | none
 padding     = 48
 
+[output]
+aspect = "16:9"          # optional: grow (never crop) the canvas to a ratio; window stays centered
+
 [audio]                  # rendered into .webm output only; ignored for .gif
 enabled   = true         # optional; defaults to on when any audio key or sound op is present
 keyboard  = "mx-brown"   # mx-brown | mx-blue | topre | laptop | typewriter | none

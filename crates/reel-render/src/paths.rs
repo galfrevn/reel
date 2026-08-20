@@ -33,3 +33,9 @@ pub fn themes_dir() -> Option<PathBuf> {
 pub fn templates_dir() -> Option<PathBuf> {
     config_dir().map(|d| d.join("templates"))
 }
+
+/// Extra fonts loaded alongside the system's — drop .ttf/.otf files here to
+/// use them without installing system-wide.
+pub fn fonts_dir() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("fonts"))
+}

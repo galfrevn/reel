@@ -30,6 +30,8 @@ pub enum RenderError {
     UnknownWindow(String),
     #[error("{0}")]
     Font(String),
+    #[error("invalid aspect `{0}` (try 16:9, 4:3, or 1.78)")]
+    BadAspect(String),
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +41,8 @@ pub struct RenderSettings {
     /// Supersampling factor: output pixels per logical pixel.
     pub scale: f32,
     pub fps: u32,
+    /// Minimum canvas width/height ratio; the canvas pads out to reach it.
+    pub aspect: Option<f32>,
 }
 
 /// Layering per the spec: built-in defaults → template → `[style]` overrides.
@@ -79,12 +83,19 @@ pub fn settings_from_config(cfg: &ReelConfig) -> Result<(RenderSettings, Vec<Str
         RenderError::UnknownTheme(theme_name.to_string(), names.join(", "))
     })?;
 
+    let aspect = match &cfg.output.aspect {
+        Some(a) => Some(
+            reel_format::parse_aspect(a).ok_or_else(|| RenderError::BadAspect(a.clone()))?,
+        ),
+        None => None,
+    };
     Ok((
         RenderSettings {
             template: tpl,
             theme,
             scale: cfg.output.scale.clamp(1, 4) as f32,
             fps: cfg.output.fps.clamp(1, 60),
+            aspect,
         },
         warnings,
     ))
@@ -142,7 +153,7 @@ impl Renderer {
     /// Full output frame size (canvas including chrome).
     pub fn canvas_size(&mut self, cols: u16, rows: u16) -> (u32, u32) {
         let (tw, th) = self.term_size(cols, rows);
-        let l = chrome::layout(&self.settings.template, tw, th, self.settings.scale);
+        let l = chrome::layout(&self.settings.template, tw, th, self.settings.scale, self.settings.aspect);
         (l.canvas_w, l.canvas_h)
     }
 
@@ -202,11 +213,11 @@ impl Renderer {
 
         let key = (term.width(), term.height());
         if self.chrome_base.as_ref().map(|(k, _)| *k) != Some(key) {
-            let base = chrome::compose_base(&tpl, &theme, term.width(), term.height(), s);
+            let base = chrome::compose_base(&tpl, &theme, term.width(), term.height(), s, self.settings.aspect);
             self.chrome_base = Some((key, base));
         }
         let base = &self.chrome_base.as_ref().unwrap().1;
-        let mut canvas = chrome::compose_over(base, &tpl, &term, s);
+        let mut canvas = chrome::compose_over(base, &tpl, &term, s, self.settings.aspect);
 
         for cap in &frame.captions {
             self.draw_caption(&mut canvas, &cap.text, cap.pos, s);

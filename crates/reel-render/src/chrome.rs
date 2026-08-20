@@ -29,7 +29,13 @@ pub struct Layout {
 /// Computes the canvas layout for a terminal image of `term_w`×`term_h`
 /// pixels. `s` is the supersampling scale (all template dimensions are in
 /// logical px and multiplied here).
-pub fn layout(tpl: &Template, term_w: u32, term_h: u32, s: f32) -> Layout {
+pub fn layout(
+    tpl: &Template,
+    term_w: u32,
+    term_h: u32,
+    s: f32,
+    aspect: Option<f32>,
+) -> Layout {
     let padding = tpl.padding * s;
     let inset = tpl.inset * s;
     let titlebar_h = if tpl.window != WindowStyle::None && tpl.titlebar != Titlebar::None {
@@ -46,13 +52,31 @@ pub fn layout(tpl: &Template, term_w: u32, term_h: u32, s: f32) -> Layout {
         WindowStyle::None => (win_x, win_y),
         _ => (win_x + padding, win_y + padding + titlebar_h),
     };
+    let mut canvas_w = (win_w + inset * 2.0).ceil();
+    let mut canvas_h = (win_h + inset * 2.0).ceil();
+    let (mut dx, mut dy) = (0.0f32, 0.0f32);
+    if let Some(ratio) = aspect {
+        // Grow (never crop) the deficient dimension and center the window.
+        if canvas_w / canvas_h < ratio {
+            let grown = (canvas_h * ratio).ceil();
+            dx = ((grown - canvas_w) / 2.0).floor();
+            canvas_w = grown;
+        } else {
+            let grown = (canvas_w / ratio).ceil();
+            dy = ((grown - canvas_h) / 2.0).floor();
+            canvas_h = grown;
+        }
+    }
+    // Keep encoder-friendly even dimensions.
+    let canvas_w = (canvas_w as u32).next_multiple_of(2);
+    let canvas_h = (canvas_h as u32).next_multiple_of(2);
     Layout {
-        canvas_w: (win_w + inset * 2.0).ceil() as u32,
-        canvas_h: (win_h + inset * 2.0).ceil() as u32,
-        term_x,
-        term_y,
-        win_x,
-        win_y,
+        canvas_w,
+        canvas_h,
+        term_x: term_x + dx,
+        term_y: term_y + dy,
+        win_x: win_x + dx,
+        win_y: win_y + dy,
         win_w,
         win_h,
         titlebar_h,
@@ -62,8 +86,15 @@ pub fn layout(tpl: &Template, term_w: u32, term_h: u32, s: f32) -> Layout {
 /// Everything that doesn't change frame to frame: canvas bg, shadow, window
 /// body, titlebar, border. Expensive (the shadow blur especially) — compute
 /// once per size and reuse.
-pub fn compose_base(tpl: &Template, theme: &Theme, term_w: u32, term_h: u32, s: f32) -> Pixmap {
-    let l = layout(tpl, term_w, term_h, s);
+pub fn compose_base(
+    tpl: &Template,
+    theme: &Theme,
+    term_w: u32,
+    term_h: u32,
+    s: f32,
+    aspect: Option<f32>,
+) -> Pixmap {
+    let l = layout(tpl, term_w, term_h, s, aspect);
     let mut canvas = Pixmap::new(l.canvas_w, l.canvas_h).expect("canvas pixmap");
 
     draw_canvas_bg(&mut canvas, &tpl.canvas);
@@ -107,8 +138,14 @@ pub fn compose_base(tpl: &Template, theme: &Theme, term_w: u32, term_h: u32, s: 
 }
 
 /// Composites one frame onto a clone of the cached base.
-pub fn compose_over(base: &Pixmap, tpl: &Template, term: &Pixmap, s: f32) -> Pixmap {
-    let l = layout(tpl, term.width(), term.height(), s);
+pub fn compose_over(
+    base: &Pixmap,
+    tpl: &Template,
+    term: &Pixmap,
+    s: f32,
+    aspect: Option<f32>,
+) -> Pixmap {
+    let l = layout(tpl, term.width(), term.height(), s, aspect);
     let mut canvas = base.clone();
     canvas.draw_pixmap(
         l.term_x.round() as i32,
@@ -123,8 +160,8 @@ pub fn compose_over(base: &Pixmap, tpl: &Template, term: &Pixmap, s: f32) -> Pix
 
 /// One-shot compose (tests, single frames).
 pub fn compose(tpl: &Template, theme: &Theme, term: &Pixmap, s: f32) -> Pixmap {
-    let base = compose_base(tpl, theme, term.width(), term.height(), s);
-    compose_over(&base, tpl, term, s)
+    let base = compose_base(tpl, theme, term.width(), term.height(), s, None);
+    compose_over(&base, tpl, term, s, None)
 }
 
 fn draw_canvas_bg(canvas: &mut Pixmap, bg: &CanvasBg) {
@@ -330,4 +367,44 @@ pub fn dim_except(pix: &mut Pixmap, rect: (i32, i32, i32, i32), strength: f32) {
     fill_rect(pix, 0, ry + rh, w, h - ry - rh, Rgba { r: 0, g: 0, b: 0, a });
     fill_rect(pix, 0, ry, rx, rh, Rgba { r: 0, g: 0, b: 0, a });
     fill_rect(pix, rx + rw, ry, w - rx - rw, rh, Rgba { r: 0, g: 0, b: 0, a });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::template::builtin;
+
+    #[test]
+    fn aspect_grows_and_centers_wide() {
+        let tpl = builtin("glass").unwrap();
+        let base = layout(&tpl, 800, 500, 1.0, None);
+        let wide = layout(&tpl, 800, 500, 1.0, Some(16.0 / 9.0));
+        let ratio = wide.canvas_w as f32 / wide.canvas_h as f32;
+        assert!((ratio - 16.0 / 9.0).abs() < 0.01, "ratio {ratio}");
+        assert!(wide.canvas_w >= base.canvas_w && wide.canvas_h >= base.canvas_h, "never crops");
+        // The window is centered in the grown dimension.
+        let left = wide.win_x;
+        let right = wide.canvas_w as f32 - (wide.win_x + wide.win_w);
+        assert!((left - right).abs() <= 2.0, "left {left} right {right}");
+    }
+
+    #[test]
+    fn aspect_grows_height_for_tall_targets() {
+        let tpl = builtin("minimal").unwrap();
+        let l = layout(&tpl, 1200, 300, 1.0, Some(1.0));
+        assert!((l.canvas_w as f32 / l.canvas_h as f32 - 1.0).abs() < 0.01);
+        let top = l.win_y;
+        let bottom = l.canvas_h as f32 - (l.win_y + l.win_h);
+        assert!((top - bottom).abs() <= 2.0);
+    }
+
+    #[test]
+    fn canvas_dimensions_stay_even() {
+        let tpl = builtin("classic").unwrap();
+        for (w, h) in [(101, 55), (333, 217)] {
+            let l = layout(&tpl, w, h, 1.0, Some(16.0 / 9.0));
+            assert_eq!(l.canvas_w % 2, 0);
+            assert_eq!(l.canvas_h % 2, 0);
+        }
+    }
 }

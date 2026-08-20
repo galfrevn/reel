@@ -38,6 +38,9 @@ enum Command {
         /// Supersampling scale override (1-4)
         #[arg(long)]
         scale: Option<u32>,
+        /// Canvas aspect ratio like 16:9 (grows the canvas, never crops)
+        #[arg(long)]
+        aspect: Option<String>,
         /// Render silent even if the .reel configures audio (webm only)
         #[arg(long)]
         no_audio: bool,
@@ -143,8 +146,8 @@ fn main() {
 
 fn run() -> Result<()> {
     match Cli::parse().command {
-        Command::Render { file, out, template, budget, scale, no_audio, quiet } => {
-            pipeline::render(&file, out, template, budget, scale, no_audio, quiet)
+        Command::Render { file, out, template, budget, scale, aspect, no_audio, quiet } => {
+            pipeline::render(&file, out, template, budget, scale, aspect, no_audio, quiet)
         }
         Command::Watch { file, out, template, serve } => watch::watch(&file, out, template, serve),
         Command::Record { out, command } => record::record(&out, command),

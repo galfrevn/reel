@@ -103,6 +103,13 @@ impl FontSet {
     pub fn system(preferred: Option<&str>) -> Result<(Self, Option<String>), String> {
         let mut db = fontdb::Database::new();
         db.load_system_fonts();
+        // reel's own fonts dir wins for project-local fonts (no system
+        // install needed) — e.g. `~/.config/reel/fonts/GeistMono-*.ttf`.
+        if let Some(dir) = crate::paths::fonts_dir() {
+            if dir.is_dir() {
+                db.load_fonts_dir(dir);
+            }
+        }
 
         let mut set = FontSet {
             db,

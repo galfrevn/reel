@@ -163,6 +163,9 @@ polish, never information.
 - WebM: VP9 (screen-content tuned) + Opus in a deterministic in-house muxer
 - Size budgets for both formats: a greedy degradation ladder that reports
   every step it takes
+- `[output] aspect = "16:9"` (or `--aspect`): the canvas pads out to any
+  ratio — never crops — with the window centered; drop extra fonts in
+  `~/.config/reel/fonts/` to use them without installing system-wide
 - Zoom re-rasterizes glyphs at the target size — text stays sharp
 
 ## Regenerate demos in CI

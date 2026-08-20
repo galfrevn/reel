@@ -116,6 +116,7 @@ pub fn render(
     template: Option<String>,
     budget: Option<String>,
     scale: Option<u32>,
+    aspect: Option<String>,
     no_audio: bool,
     quiet: bool,
 ) -> Result<()> {
@@ -123,6 +124,9 @@ pub fn render(
     let mut cfg = loaded.file.config.clone();
     if let Some(s) = scale {
         cfg.output.scale = s;
+    }
+    if aspect.is_some() {
+        cfg.output.aspect = aspect;
     }
     if let Some(b) = budget {
         cfg.output.budget = Some(b);

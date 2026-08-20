@@ -76,11 +76,13 @@ pub struct OutputCfg {
     pub fps: u32,
     /// Supersampling factor for crisp text.
     pub scale: u32,
+    /// Canvas aspect ratio like "16:9"; the canvas grows (never crops) to fit.
+    pub aspect: Option<String>,
 }
 
 impl Default for OutputCfg {
     fn default() -> Self {
-        OutputCfg { file: None, looping: true, budget: None, fps: 30, scale: 2 }
+        OutputCfg { file: None, looping: true, budget: None, fps: 30, scale: 2, aspect: None }
     }
 }
 
@@ -142,6 +144,17 @@ impl AudioCfg {
             }
         }
     }
+}
+
+/// Parses an aspect ratio like "16:9", "4:3", or "1.78" into width/height.
+pub fn parse_aspect(s: &str) -> Option<f32> {
+    let s = s.trim();
+    let v = if let Some((w, h)) = s.split_once(':') {
+        w.trim().parse::<f32>().ok()? / h.trim().parse::<f32>().ok()?
+    } else {
+        s.parse::<f32>().ok()?
+    };
+    (v.is_finite() && v > 0.1 && v < 10.0).then_some(v)
 }
 
 /// Parses a size budget like "800kb", "2mb", "1.5MB" into bytes.
