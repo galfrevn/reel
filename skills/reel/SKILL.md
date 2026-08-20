@@ -265,6 +265,74 @@ For a custom look: `reel template show glass > mine.toml`, edit, then
 `--template`). `reel template add owner/repo` installs a whole pack from any
 GitHub repo with a `templates/` directory.
 
+### When the look needs a font the user doesn't have
+
+Templates name the font they were designed around (`reel template show
+<name>` prints it). When it's missing, reel silently substitutes whatever
+monospace it can find — the render says so:
+
+```
+warning: font `Geist Mono` is not installed — using `MesloLGS NF`
+```
+
+(`reel render` prints that warning; `reel shot` doesn't — so check on a
+render.) Don't ship the substitute look without a word, and don't hand the
+install back to the user: fetching the font is your job. Two other symptoms
+of the same problem: boxes or blank cells where a TUI draws icons (no Nerd
+Font), and a template that looks nothing like its gallery preview.
+
+Install into reel's own fonts dir — no system install, no sudo, nothing left
+behind to uninstall, and reel picks it up on the next render:
+
+```sh
+mkdir -p ~/.config/reel/fonts
+```
+
+- **A Nerd Font** (what icon glyphs need) — take the four core styles from
+  the nerd-fonts repo (~10 MB) rather than the ~130 MB release zip:
+
+  ```sh
+  base="https://github.com/ryanoasis/nerd-fonts/raw/master/patched-fonts/JetBrainsMono/Ligatures"
+  for v in Regular Bold Italic BoldItalic; do
+    curl -fsSL "$base/JetBrainsMonoNerdFont-$v.ttf" \
+      -o ~/.config/reel/fonts/JetBrainsMonoNerdFont-$v.ttf
+  done
+  ```
+
+  Then `[style] font = "JetBrainsMono Nerd Font"`. For another family, swap
+  the directory and file prefix — `patched-fonts/<Family>/` lists what
+  exists (`NoLigatures/` for families that have both).
+
+- **An open font** (IBM Plex Mono, Space Mono, Fira Code…) — Google Fonts
+  serves the files straight from its repo:
+
+  ```sh
+  curl -fsSL "https://github.com/google/fonts/raw/main/ofl/spacemono/SpaceMono-Regular.ttf" \
+    -o ~/.config/reel/fonts/SpaceMono-Regular.ttf
+  ```
+
+  The path is `ofl/<family lowercased, no spaces>/<File>.ttf`; pull Bold and
+  Italic too so bold text in the demo doesn't get faked.
+
+- **A vendor release** (Geist Mono lives in `vercel/geist-font` releases,
+  Berkeley Mono behind a purchase, …) — download the release archive and
+  unzip only the `.ttf`/`.otf` files into the same dir.
+
+- If the user would rather have it system-wide on macOS:
+  `brew install --cask font-jetbrains-mono-nerd-font` (Homebrew fonts are
+  named `font-<family-slug>`).
+
+Re-render afterwards and confirm the warning is gone. If it isn't, the name
+in the TOML doesn't match the installed family: read the real one
+(`fc-list : family | grep -i <word>`, or Font Book on macOS) and set
+`[style] font` to that exact string — template authors do get these wrong.
+
+Two manners here. Say which font you're fetching and from where before you
+fetch it: fonts are licensed, and the user may already own one they'd rather
+use. And if the wanted font is commercial and absent, don't go looking for a
+copy — say so, then offer the closest open lookalike or keep the fallback
+with the trade-off named.
+
 One physics constraint transcends template choice: gradient backgrounds cost
 GIF palette efficiency. If a tight size budget starts visibly degrading
 quality, switch to a solid-canvas template and tell the user why.
@@ -358,9 +426,10 @@ ids), add `redact "pattern"` ops before sharing the output.
 ## Current limits (don't promise these)
 
 - reel renders with the machine's installed fonts (`[style] font` accepts
-  any family name). TUI icon glyphs need a Nerd Font installed — if icons
-  render as boxes, tell the user to install one (e.g. JetBrainsMono Nerd
-  Font) and re-render; no re-recording needed.
+  any family name); nothing ships in the binary. A font the look needs but
+  the machine lacks is fixable in seconds — install it yourself (see "When
+  the look needs a font the user doesn't have") and re-render; no
+  re-recording needed.
 - Outputs: `.gif`, `.webm`, `.apng`, `.png` (via `shot`), `.txt`. MP4 is
   deliberately unsupported (licensing); offer WebM instead.
 - Windows support is best-effort and untested.
