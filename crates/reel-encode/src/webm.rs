@@ -185,7 +185,7 @@ pub fn mux(
     let mut segment = Vec::new();
     {
         let mut info = Vec::new();
-        el_uint(&mut info, 0x2AD7_B1, TIMESTAMP_SCALE); // TimestampScale
+        el_uint(&mut info, 0x002A_D7B1, TIMESTAMP_SCALE); // TimestampScale
         el_float(&mut info, 0x4489, duration_ms); // Duration
         el_string(&mut info, 0x4D80, "reel"); // MuxingApp
         el_string(&mut info, 0x5741, "reel"); // WritingApp

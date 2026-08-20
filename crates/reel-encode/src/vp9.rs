@@ -119,7 +119,7 @@ impl Vp9Encoder {
                 &mut self.ctx,
                 &img,
                 pts_ms,
-                dur_ms.max(1) as u64,
+                dur_ms.max(1),
                 0,
                 VPX_DL_GOOD_QUALITY as u64,
             );
