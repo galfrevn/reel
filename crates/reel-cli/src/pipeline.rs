@@ -126,6 +126,67 @@ fn render_each(
     Ok(())
 }
 
+/// Like [`render_each`], rasterizing on worker threads while the (serial)
+/// encoder consumes frames in order on this thread. Frames are independent,
+/// so worker `k` renders frames `k, k+N, k+2N…` with its own `Renderer`;
+/// bounded channels plus recycled buffers keep only a few frames in flight,
+/// preserving the flat-memory property of the streaming design.
+///
+/// `renderer` must already carry the settings to render with (fit_exact
+/// applied); it is only used directly when the job is too small to be worth
+/// spinning up workers.
+fn render_each_parallel(
+    renderer: &mut Renderer,
+    plans: &[reel_render::FramePlan],
+    snapshots: &[Snapshot],
+    mut sink: impl FnMut(&[u8], u32, u32, f64) -> Result<()>,
+) -> Result<()> {
+    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(8);
+    if workers < 2 || plans.len() < 32 {
+        return render_each(renderer, plans, snapshots, sink);
+    }
+    let settings = renderer.settings.clone();
+
+    std::thread::scope(|scope| -> Result<()> {
+        let mut frame_rx = Vec::with_capacity(workers);
+        let mut recycle_tx = Vec::with_capacity(workers);
+        for k in 0..workers {
+            let (ftx, frx) = std::sync::mpsc::sync_channel::<(Vec<u8>, u32, u32)>(1);
+            let (rtx, rrx) = std::sync::mpsc::channel::<Vec<u8>>();
+            for _ in 0..2 {
+                let _ = rtx.send(Vec::new());
+            }
+            let settings = settings.clone();
+            scope.spawn(move || {
+                // Errors surface on the main thread as a closed channel.
+                let Ok((mut r, _)) = Renderer::new(settings) else { return };
+                let mut i = k;
+                while i < plans.len() {
+                    let f = &plans[i];
+                    let (w, h, rgba) = r.render_frame_rgba(&snapshots[f.snapshot], f);
+                    let Ok(mut buf) = rrx.recv() else { return };
+                    buf.clear();
+                    buf.extend_from_slice(rgba);
+                    if ftx.send((buf, w, h)).is_err() {
+                        return; // main thread bailed
+                    }
+                    i += workers;
+                }
+            });
+            frame_rx.push(frx);
+            recycle_tx.push(rtx);
+        }
+        for (i, f) in plans.iter().enumerate() {
+            let (buf, w, h) = frame_rx[i % workers]
+                .recv()
+                .map_err(|_| anyhow!("render worker failed"))?;
+            sink(&buf, w, h, f.dur)?;
+            let _ = recycle_tx[i % workers].send(buf);
+        }
+        Ok(())
+    })
+}
+
 fn uniform_dims(snaps: &[Snapshot]) -> bool {
     snaps.windows(2).all(|w| w[0].cols == w[1].cols && w[0].rows == w[1].rows)
 }
@@ -290,7 +351,7 @@ fn render_apng(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
             plans.len() as u32,
             cfg.output.looping,
         )?;
-        render_each(&mut renderer, &plans, &loaded.snapshots, |rgba, _, _, dur| {
+        render_each_parallel(&mut renderer, &plans, &loaded.snapshots, |rgba, _, _, dur| {
             stream.push(rgba, dur).map_err(Into::into)
         })?;
         stream.finish()?
@@ -554,7 +615,7 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
             ch,
             &WebmOptions { cq_level: *cq, cfr_fps: Some(*fps), ..Default::default() },
         )?;
-        render_each(r, &plans, &loaded.snapshots, |rgba, w, h, dur| {
+        render_each_parallel(r, &plans, &loaded.snapshots, |rgba, w, h, dur| {
             encoder.push(rgba, w, h, dur).map_err(Into::into)
         })?;
         let cues: Vec<reel_encode::webm::Cue> = if cfg.output.subtitles {
@@ -696,7 +757,7 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
         }
 
         let mut builder = reel_encode::GifPaletteBuilder::new(*colors);
-        render_each(r, &plans, &loaded.snapshots, |rgba, _, _, _| {
+        render_each_parallel(r, &plans, &loaded.snapshots, |rgba, _, _, _| {
             builder.feed(rgba);
             Ok(())
         })?;
@@ -710,7 +771,7 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
                 builder.finish(),
                 step_cfg.output.looping,
             )?;
-            render_each(r, &plans, &loaded.snapshots, |rgba, _, _, dur| {
+            render_each_parallel(r, &plans, &loaded.snapshots, |rgba, _, _, dur| {
                 stream.push(rgba, dur).map_err(Into::into)
             })?;
             stream.finish()?

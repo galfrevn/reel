@@ -23,6 +23,9 @@ pub struct Vp9Config {
 
 pub struct Vp9Encoder {
     ctx: vpx_codec_ctx_t,
+    /// Reused input image — vpx_img_alloc/free per frame showed up in
+    /// profiles on long renders.
+    img: vpx_image_t,
     width: u32,
     height: u32,
 }
@@ -72,6 +75,9 @@ impl Vp9Encoder {
                 // Terminal output is the textbook screen-content case.
                 (vp8e_enc_control_id::VP9E_SET_TUNE_CONTENT as i32, vp9e_tune_content::VP9E_CONTENT_SCREEN as i32),
                 (vp8e_enc_control_id::VP9E_SET_ROW_MT as i32, 1),
+                // Without tiles, g_threads barely helps VP9; 4 tile columns
+                // let the encoder actually use the cores.
+                (vp8e_enc_control_id::VP9E_SET_TILE_COLUMNS as i32, 2),
                 // Tag the bitstream to match yuv.rs's BT.709 conversion.
                 (vp8e_enc_control_id::VP9E_SET_COLOR_SPACE as i32, vpx_color_space::VPX_CS_BT_709 as i32),
             ];
@@ -82,7 +88,21 @@ impl Vp9Encoder {
                     return Err(vpx_err("codec_control", rc));
                 }
             }
-            Ok(Vp9Encoder { ctx, width, height })
+
+            let mut img = MaybeUninit::<vpx_image_t>::uninit();
+            if vpx_img_alloc(
+                img.as_mut_ptr(),
+                vpx_img_fmt::VPX_IMG_FMT_I420,
+                width,
+                height,
+                16,
+            )
+            .is_null()
+            {
+                vpx_codec_destroy(&mut ctx);
+                return Err(EncodeError::Vpx("vpx_img_alloc failed".into()));
+            }
+            Ok(Vp9Encoder { ctx, img: img.assume_init(), width, height })
         }
     }
 
@@ -96,19 +116,7 @@ impl Vp9Encoder {
     ) -> Result<Vec<Block>, EncodeError> {
         assert_eq!((frame.width, frame.height), (self.width, self.height));
         unsafe {
-            let mut img = MaybeUninit::<vpx_image_t>::uninit();
-            if vpx_img_alloc(
-                img.as_mut_ptr(),
-                vpx_img_fmt::VPX_IMG_FMT_I420,
-                self.width,
-                self.height,
-                16,
-            )
-            .is_null()
-            {
-                return Err(EncodeError::Vpx("vpx_img_alloc failed".into()));
-            }
-            let mut img = img.assume_init();
+            let img = &mut self.img;
             copy_plane(img.planes[0], img.stride[0] as usize, &frame.y, self.width as usize, self.height as usize);
             let cw = (self.width as usize).div_ceil(2);
             let ch = (self.height as usize).div_ceil(2);
@@ -117,13 +125,12 @@ impl Vp9Encoder {
 
             let rc = vpx_codec_encode(
                 &mut self.ctx,
-                &img,
+                &self.img,
                 pts_ms,
                 dur_ms.max(1),
                 0,
                 VPX_DL_GOOD_QUALITY as u64,
             );
-            vpx_img_free(&mut img);
             if rc != VPX_CODEC_OK {
                 return Err(vpx_err("encode", rc));
             }
@@ -176,6 +183,7 @@ impl Vp9Encoder {
 impl Drop for Vp9Encoder {
     fn drop(&mut self) {
         unsafe {
+            vpx_img_free(&mut self.img);
             vpx_codec_destroy(&mut self.ctx);
         }
     }

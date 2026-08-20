@@ -374,11 +374,17 @@ pub fn pixmap_to_rgba(pix: &Pixmap) -> Vec<u8> {
 
 /// Buffer-reusing variant of [`pixmap_to_rgba`].
 pub fn pixmap_to_rgba_into(pix: &Pixmap, out: &mut Vec<u8>) {
+    let px = pix.pixels();
     out.clear();
-    out.reserve(pix.pixels().len() * 4);
-    for p in pix.pixels() {
-        let c = p.demultiply();
-        out.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+    out.resize(px.len() * 4, 0);
+    for (p, o) in px.iter().zip(out.chunks_exact_mut(4)) {
+        // Opaque pixels — virtually the whole canvas — need no demultiply.
+        if p.alpha() == 255 {
+            o.copy_from_slice(&[p.red(), p.green(), p.blue(), 255]);
+        } else {
+            let c = p.demultiply();
+            o.copy_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+        }
     }
 }
 
@@ -391,6 +397,12 @@ fn crop_into(src: &Pixmap, x: i32, y: i32, w: u32, h: u32, out: &mut Pixmap) {
     }
     let sw = src.width() as i32;
     let sh = src.height() as i32;
+    let col0 = (-x).max(0);
+    let col1 = (sw - x).min(w as i32);
+    if col0 >= col1 {
+        return;
+    }
+    let n = (col1 - col0) as usize;
     let src_px = src.pixels();
     let out_w = out.width() as usize;
     let dst = out.pixels_mut();
@@ -399,13 +411,9 @@ fn crop_into(src: &Pixmap, x: i32, y: i32, w: u32, h: u32, out: &mut Pixmap) {
         if sy < 0 || sy >= sh {
             continue;
         }
-        for col in 0..w as i32 {
-            let sx = x + col;
-            if sx < 0 || sx >= sw {
-                continue;
-            }
-            dst[row as usize * out_w + col as usize] = src_px[sy as usize * sw as usize + sx as usize];
-        }
+        let s0 = sy as usize * sw as usize + (x + col0) as usize;
+        let d0 = row as usize * out_w + col0 as usize;
+        dst[d0..d0 + n].copy_from_slice(&src_px[s0..s0 + n]);
     }
 }
 
