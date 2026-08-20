@@ -64,6 +64,9 @@ enum Command {
         /// Where to write the recording
         #[arg(long, short, default_value = "session.cast")]
         out: PathBuf,
+        /// PTY size like 120x40 (defaults to your terminal's size)
+        #[arg(long, value_name = "COLSxROWS")]
+        size: Option<String>,
         /// Command to record, after `--` (defaults to your shell)
         #[arg(last = true)]
         command: Vec<String>,
@@ -150,7 +153,7 @@ fn run() -> Result<()> {
             pipeline::render(&file, out, template, budget, scale, aspect, no_audio, quiet)
         }
         Command::Watch { file, out, template, serve } => watch::watch(&file, out, template, serve),
-        Command::Record { out, command } => record::record(&out, command),
+        Command::Record { out, size, command } => record::record(&out, size, command),
         Command::Shot { file, at, out, template } => pipeline::shot(&file, &at, out, template),
         Command::Inspect { file } => pipeline::inspect(&file),
         Command::Init { template, out } => init(&template, &out),

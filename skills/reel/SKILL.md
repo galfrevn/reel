@@ -40,6 +40,10 @@ interactive session. Give them the exact command and what to do in it:
 reel record -o session.cast -- <the command to demo>
 ```
 
+Recording in the user's own terminal inherits its size, so the demo's
+geometry matches what they see daily; `--size 120x40` pins the PTY when
+recording headlessly or targeting specific dimensions.
+
 This also writes a `session.cast.reelmeta` sidecar with timestamped
 keystrokes — keep the two files together; the sidecar is what makes
 keyboard audio accurate. (`asciinema rec` works too, without the sidecar.)

@@ -83,6 +83,11 @@ pub struct AudioPlan {
 /// compresses events together; past this density we *drop* keys rather than
 /// let them smear into noise (spec §8.1).
 const KEY_MIN_GAP: f64 = 0.04;
+/// Keystroke sounds snap forward to the grid change they caused, when one
+/// lands within this window. TUIs repaint on their own tick, often well
+/// after the key event — and the viewer can only sync sound to what they
+/// *see*. Keys whose echo never shows up keep their input timestamp.
+const KEY_ALIGN_WINDOW: f64 = 0.35;
 /// Minimum output-time gap between UI response cues.
 const UI_MIN_GAP: f64 = 0.8;
 /// Source-idle threshold that makes a grid change a "response" cue.
@@ -146,7 +151,16 @@ pub fn plan_events(
             if key.kind == KeyKind::Other || muted(key.src_time) {
                 continue;
             }
-            let Some(t) = timeline.project(key.src_time) else {
+            // Sync to the repaint this key caused, not the raw input time.
+            let src_t = changes
+                .iter()
+                .find(|c| {
+                    c.src_time >= key.src_time - 0.02
+                        && c.src_time <= key.src_time + KEY_ALIGN_WINDOW
+                })
+                .map(|c| c.src_time)
+                .unwrap_or(key.src_time);
+            let Some(t) = timeline.project(src_t) else {
                 continue; // cut away
             };
             if t - last_t < KEY_MIN_GAP {
@@ -362,6 +376,38 @@ mod tests {
         let b = plan_events(&tl, &[], &keys, &[], &cfg_keyboard()).unwrap();
         assert!((a.events[0].pitch - b.events[0].pitch).abs() < 1e-9);
         assert_ne!(a.events[0].pitch, a.events[2].pitch, "two keys share a pitch");
+    }
+
+    #[test]
+    fn key_sounds_snap_to_the_repaint_they_caused() {
+        let tl = timeline(EditOps::default(), 10.0);
+        // Key at 1.0; the TUI paints the echo at 1.19.
+        let changes = [GridChange {
+            src_time: 1.19,
+            changed_cells: 1,
+            total_cells: 800,
+            rows_touched: 1,
+            cursor_advanced: true,
+        }];
+        let plan = plan_events(&tl, &[], &[key(1.0)], &changes, &cfg_keyboard()).unwrap();
+        let press = plan.events.iter().find(|e| e.name == "press").unwrap();
+        assert!((press.t - 1.19).abs() < 1e-9, "press at {}", press.t);
+    }
+
+    #[test]
+    fn keys_without_a_nearby_repaint_keep_their_time() {
+        let tl = timeline(EditOps::default(), 10.0);
+        // Only a change far outside the alignment window.
+        let changes = [GridChange {
+            src_time: 3.0,
+            changed_cells: 500,
+            total_cells: 800,
+            rows_touched: 10,
+            cursor_advanced: false,
+        }];
+        let plan = plan_events(&tl, &[], &[key(1.0)], &changes, &cfg_keyboard()).unwrap();
+        let press = plan.events.iter().find(|e| e.name == "press").unwrap();
+        assert!((press.t - 1.0).abs() < 1e-9);
     }
 
     #[test]

@@ -67,14 +67,18 @@ impl Utf8Carry {
     }
 }
 
-pub fn record(out: &Path, command: Vec<String>) -> Result<()> {
+pub fn record(out: &Path, size: Option<String>, command: Vec<String>) -> Result<()> {
     if out.exists() {
         return Err(anyhow!(
             "{} already exists — pick another --out or remove it first",
             out.display()
         ));
     }
-    let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    let (cols, rows) = match &size {
+        Some(s) => parse_size(s)
+            .ok_or_else(|| anyhow!("invalid --size `{s}` (expected COLSxROWS, e.g. 120x40)"))?,
+        None => crossterm::terminal::size().unwrap_or((80, 24)),
+    };
 
     let pty = native_pty_system();
     let pair = pty
@@ -198,7 +202,9 @@ pub fn record(out: &Path, command: Vec<String>) -> Result<()> {
     }
 
     // Window resizes → PTY + cast "r" events (polled: portable and simple).
-    {
+    // With an explicit --size the PTY is pinned: tracking the real terminal
+    // would undo exactly what the flag asked for.
+    if size.is_none() {
         let writer = writer.clone();
         let done = done.clone();
         let master = pair.master;
@@ -262,6 +268,14 @@ pub fn record(out: &Path, command: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+/// "120x40" → (120, 40).
+fn parse_size(s: &str) -> Option<(u16, u16)> {
+    let (c, r) = s.trim().split_once(['x', 'X'])?;
+    let cols: u16 = c.trim().parse().ok()?;
+    let rows: u16 = r.trim().parse().ok()?;
+    (cols >= 20 && rows >= 5 && cols <= 500 && rows <= 200).then_some((cols, rows))
+}
+
 fn default_shell() -> String {
     #[cfg(windows)]
     {
@@ -276,6 +290,14 @@ fn default_shell() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn size_parses_and_bounds() {
+        assert_eq!(parse_size("120x40"), Some((120, 40)));
+        assert_eq!(parse_size(" 88X24 "), Some((88, 24)));
+        assert_eq!(parse_size("0x40"), None);
+        assert_eq!(parse_size("banana"), None);
+    }
 
     #[test]
     fn utf8_carry_reassembles_split_glyphs() {

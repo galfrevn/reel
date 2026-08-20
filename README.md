@@ -108,7 +108,7 @@ stay valid as you add or remove other edits. Bare durations (`for 2.5s`,
 ## Commands
 
 ```
-reel record -o FILE -- CMD     # capture over a PTY (+ .reelmeta input sidecar)
+reel record -o FILE -- CMD     # capture over a PTY (--size 120x40 to pin dimensions)
 reel render FILE               # .reel or .cast → .gif / .webm / .png / .txt
 reel watch FILE                # re-render on save; --serve for live browser preview
 reel shot FILE --at T          # single frame PNG
