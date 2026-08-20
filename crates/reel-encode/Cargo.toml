@@ -1,13 +1,25 @@
 [package]
 name = "reel-encode"
-description = "GIF and PNG encoders with exact-palette and delta-rect strategies"
+description = "GIF, PNG, and WebM (VP9+Opus) encoders for reel"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["video"]
+# VP9 video output. Needs libvpx (pkg-config) and a C compiler at build time;
+# disable for a pure-Rust build without .webm support.
+video = ["dep:env-libvpx-sys"]
+
 [dependencies]
 gif = "0.14"
 color_quant = "2"
 png = "0.18"
+rusty-opus = "0.9"
+env-libvpx-sys = { version = "5.1", features = ["generate"], optional = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+opus-decoder = "0.1"
+matroska = "0.30"

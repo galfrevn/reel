@@ -1,0 +1,4 @@
+# rendered outputs — the committed copies live in assets/demos/
+*.gif
+*.webm
+*.png

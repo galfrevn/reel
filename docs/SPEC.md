@@ -581,7 +581,7 @@ This turns producing a demo from a chore into something a user fiddles with unti
 
 Do not build the PTY layer first. Validate the thesis with the cheapest possible artifact.
 
-### Phase 0 — Renderer only (~2 weeks)
+### Phase 0 — Renderer only (~2 weeks) — ✅ shipped
 
 Input: an existing `.cast` (generate with `asciinema rec -- opencode`; no capture code needed yet). Output: a GIF.
 
@@ -592,7 +592,7 @@ Input: an existing `.cast` (generate with `asciinema rec -- opencode`; no captur
 
 **Validation gate.** Publish a side-by-side comparison: same cast rendered by `agg` versus reel, with file sizes. If this generates no reaction, the thesis is wrong and two weeks were spent, not three months.
 
-### Phase 1 — Timeline (~2 weeks)
+### Phase 1 — Timeline (~2 weeks) — ✅ shipped
 
 - Full `.reel` parser (front-matter + script)
 - `trim`, `cut`, `speed`, `hold`, `freeze`, `caption`, `zoom`, `pan`, `highlight`
@@ -600,7 +600,7 @@ Input: an existing `.cast` (generate with `asciinema rec -- opencode`; no captur
 
 This is the actual product. Everything before it was infrastructure.
 
-### Phase 1.5 — Audio (~1.5 weeks)
+### Phase 1.5 — Audio (~1.5 weeks) — ✅ shipped (procedural synthesis instead of samples: recipes ported from cuelume, no audio files at all)
 
 - WebM/VP9/Opus encoder path
 - Event-list audio model, mixer, keyboard profiles
@@ -608,14 +608,18 @@ This is the actual product. Everything before it was infrastructure.
 
 Audio comes after the timeline because it needs the timeline to synchronize against.
 
-### Phase 2 — Own capture (~3 weeks)
+### Phase 2 — Own capture (~3 weeks) — ✅ shipped (interactive passthrough: the real terminal answers queries; §9's query responder becomes a script-mode concern)
 
 - `portable-pty` spawn, `reel record`
 - Terminal query responses (§9) — the week-long slog
 - Nerd Font embedding and PUA fallback
 - Sidecar `input_events` for accurate keystroke audio
 
-### Phase 3 — Breadth
+### Phase 3 — Breadth — partially shipped
+
+Shipped: theme importers, community templates (client-side via GitHub, no
+hosted registry), the `crt` template, the GitHub Action, Windows builds in
+CI (untested). Remaining:
 
 - Script mode (`type`, `key`, `wait_*`, `capture_live`)
 - VHS `.tape` import for zero-switching-cost adoption

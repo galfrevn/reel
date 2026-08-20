@@ -168,10 +168,51 @@ pub struct InputEvent {
 impl ReelMeta {
     /// Loads `<cast>.reelmeta` next to a cast file if it exists.
     pub fn load_sidecar(cast_path: &Path) -> Option<Self> {
-        let mut p = cast_path.as_os_str().to_owned();
-        p.push(".reelmeta");
-        let text = std::fs::read_to_string(Path::new(&p)).ok()?;
+        let text = std::fs::read_to_string(sidecar_path(cast_path)).ok()?;
         serde_json::from_str(&text).ok()
+    }
+
+    /// Writes the sidecar next to its cast.
+    pub fn save_sidecar(&self, cast_path: &Path) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(self).expect("sidecar serializes");
+        std::fs::write(sidecar_path(cast_path), json)
+    }
+}
+
+fn sidecar_path(cast_path: &Path) -> std::path::PathBuf {
+    let mut p = cast_path.as_os_str().to_owned();
+    p.push(".reelmeta");
+    std::path::PathBuf::from(p)
+}
+
+/// Streaming asciinema-v2 writer for `reel record`. Events go to disk as
+/// they happen, so a crashed session still leaves a playable cast. The
+/// header carries no duration; readers fall back to the last event time.
+pub struct CastWriter<W: std::io::Write> {
+    out: W,
+    prev_t: f64,
+}
+
+impl<W: std::io::Write> CastWriter<W> {
+    pub fn new(mut out: W, header: &CastHeader) -> std::io::Result<Self> {
+        let json = serde_json::to_string(header).expect("header serializes");
+        writeln!(out, "{json}")?;
+        Ok(CastWriter { out, prev_t: 0.0 })
+    }
+
+    /// Appends one event. Time is clamped monotonic — wall-clock hiccups
+    /// must never produce a cast our own parser rejects.
+    pub fn event(&mut self, time: f64, code: &str, data: &str) -> std::io::Result<()> {
+        let time = if time < self.prev_t { self.prev_t } else { time };
+        self.prev_t = time;
+        let line =
+            serde_json::to_string(&(time, code, data)).expect("event serializes");
+        writeln!(self.out, "{line}")?;
+        self.out.flush()
+    }
+
+    pub fn finish(mut self) -> std::io::Result<()> {
+        self.out.flush()
     }
 }
 
@@ -212,6 +253,53 @@ mod tests {
 [0.5, "o", "b"]
 "#;
         assert!(matches!(Cast::parse(text).unwrap_err(), CastError::NonMonotonic { .. }));
+    }
+
+    #[test]
+    fn writer_roundtrips_through_the_parser() {
+        let header = CastHeader {
+            version: 2,
+            width: 100,
+            height: 30,
+            timestamp: Some(1_700_000_000),
+            duration: None,
+            title: None,
+            command: Some("zsh".into()),
+            env: None,
+            extra: Default::default(),
+        };
+        let mut buf = Vec::new();
+        let mut w = CastWriter::new(&mut buf, &header).unwrap();
+        w.event(0.1, "o", "hi \u{1b}[31mred\u{1b}[0m\r\n").unwrap();
+        w.event(0.5, "r", "80x24").unwrap();
+        w.event(0.4, "o", "clock went backwards").unwrap(); // clamped
+        w.finish().unwrap();
+
+        let cast = Cast::parse(std::str::from_utf8(&buf).unwrap()).unwrap();
+        assert_eq!((cast.cols(), cast.rows()), (100, 30));
+        assert_eq!(cast.events.len(), 3);
+        assert_eq!(cast.events[0].data, "hi \u{1b}[31mred\u{1b}[0m\r\n");
+        assert_eq!(cast.events[1].kind, EventKind::Resize);
+        assert!((cast.events[2].time - 0.5).abs() < 1e-9, "monotonic clamp");
+    }
+
+    #[test]
+    fn sidecar_saves_and_loads() {
+        let dir = std::env::temp_dir().join("reel-cast-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cast_path = dir.join("s.cast");
+        let meta = ReelMeta {
+            version: 1,
+            input_events: vec![InputEvent { t: 1.5, kind: "key".into(), value: "a".into() }],
+            term_env: [("TERM".to_string(), "xterm-256color".to_string())].into(),
+            cols: 80,
+            rows: 24,
+        };
+        meta.save_sidecar(&cast_path).unwrap();
+        let loaded = ReelMeta::load_sidecar(&cast_path).unwrap();
+        assert_eq!(loaded.input_events.len(), 1);
+        assert_eq!(loaded.input_events[0].value, "a");
+        assert_eq!(loaded.cols, 80);
     }
 
     #[test]

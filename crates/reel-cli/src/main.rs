@@ -1,4 +1,7 @@
 mod pipeline;
+mod record;
+mod templates;
+mod themes;
 mod watch;
 
 use anyhow::{bail, Context, Result};
@@ -23,7 +26,7 @@ enum Command {
     Render {
         /// Path to a .reel file, or a .cast for a quick default render
         file: PathBuf,
-        /// Output file; extension picks the format (.gif, .png, .txt)
+        /// Output file; extension picks the format (.gif, .webm, .png, .txt)
         #[arg(long, short)]
         out: Option<PathBuf>,
         /// Template override (minimal, glass, classic, paper)
@@ -35,6 +38,12 @@ enum Command {
         /// Supersampling scale override (1-4)
         #[arg(long)]
         scale: Option<u32>,
+        /// Canvas aspect ratio like 16:9 (grows the canvas, never crops)
+        #[arg(long)]
+        aspect: Option<String>,
+        /// Render silent even if the .reel configures audio (webm only)
+        #[arg(long)]
+        no_audio: bool,
         /// Suppress progress output
         #[arg(long, short)]
         quiet: bool,
@@ -49,6 +58,18 @@ enum Command {
         /// Serve a live preview at http://127.0.0.1:PORT/
         #[arg(long, value_name = "PORT", num_args = 0..=1, default_missing_value = "4171")]
         serve: Option<u16>,
+    },
+    /// Record a terminal session to a .cast (+ .reelmeta input sidecar)
+    Record {
+        /// Where to write the recording
+        #[arg(long, short, default_value = "session.cast")]
+        out: PathBuf,
+        /// PTY size like 120x40 (defaults to your terminal's size)
+        #[arg(long, value_name = "COLSxROWS")]
+        size: Option<String>,
+        /// Command to record, after `--` (defaults to your shell)
+        #[arg(last = true)]
+        command: Vec<String>,
     },
     /// Render a single frame to PNG
     Shot {
@@ -71,10 +92,52 @@ enum Command {
         #[arg(long, short, default_value = "demo.reel")]
         out: PathBuf,
     },
-    /// List built-in templates
+    /// List available templates (alias for `template list`)
     Templates,
-    /// List built-in themes
+    /// Manage templates
+    Template {
+        #[command(subcommand)]
+        action: TemplateAction,
+    },
+    /// List available themes (alias for `theme list`)
     Themes,
+    /// Manage themes
+    Theme {
+        #[command(subcommand)]
+        action: ThemeAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum TemplateAction {
+    /// List built-in and installed templates
+    List,
+    /// Print a template as TOML (a starting point for your own)
+    Show { name: String },
+    /// Install templates from a .toml file or a GitHub repo (owner/repo[/name])
+    Add { source: String },
+}
+
+#[derive(Subcommand)]
+enum ThemeAction {
+    /// List built-in and imported themes
+    List,
+    /// Import a theme file (base16 .yaml, alacritty .toml/.yml, iTerm2 .itermcolors)
+    Import {
+        file: PathBuf,
+        /// Name to install it under (defaults to the scheme/file name)
+        #[arg(long)]
+        name: Option<String>,
+    },
+}
+
+fn list_themes() {
+    for name in reel_render::theme::theme_names() {
+        println!("{name}");
+    }
+    for name in reel_render::theme::user_theme_names() {
+        println!("{name} (imported)");
+    }
 }
 
 fn main() {
@@ -86,33 +149,34 @@ fn main() {
 
 fn run() -> Result<()> {
     match Cli::parse().command {
-        Command::Render { file, out, template, budget, scale, quiet } => {
-            pipeline::render(&file, out, template, budget, scale, quiet)
+        Command::Render { file, out, template, budget, scale, aspect, no_audio, quiet } => {
+            pipeline::render(&file, out, template, budget, scale, aspect, no_audio, quiet)
         }
         Command::Watch { file, out, template, serve } => watch::watch(&file, out, template, serve),
+        Command::Record { out, size, command } => record::record(&out, size, command),
         Command::Shot { file, at, out, template } => pipeline::shot(&file, &at, out, template),
         Command::Inspect { file } => pipeline::inspect(&file),
         Command::Init { template, out } => init(&template, &out),
-        Command::Templates => {
-            for name in reel_render::template::template_names() {
-                let t = reel_render::template::builtin(name).unwrap();
-                println!("{name:<10} {}", t.description);
-            }
+        Command::Templates | Command::Template { action: TemplateAction::List } => {
+            templates::list();
             Ok(())
         }
-        Command::Themes => {
-            for name in reel_render::theme::theme_names() {
-                println!("{name}");
-            }
+        Command::Template { action: TemplateAction::Show { name } } => templates::show(&name),
+        Command::Template { action: TemplateAction::Add { source } } => templates::add(&source),
+        Command::Themes | Command::Theme { action: ThemeAction::List } => {
+            list_themes();
             Ok(())
+        }
+        Command::Theme { action: ThemeAction::Import { file, name } } => {
+            themes::import(&file, name)
         }
     }
 }
 
 fn init(template: &str, out: &PathBuf) -> Result<()> {
-    if reel_render::template::builtin(template).is_none() {
+    if reel_render::template::lookup(template).is_none() {
         bail!(
-            "unknown template `{template}` (built-ins: {})",
+            "unknown template `{template}` (available: {})",
             reel_render::template::template_names().join(", ")
         );
     }
@@ -122,7 +186,7 @@ fn init(template: &str, out: &PathBuf) -> Result<()> {
     let content = format!(
         r#"---
 [source]
-cast = "session.cast"          # record with: asciinema rec session.cast -- your-tui
+cast = "session.cast"          # record with: reel record -- your-tui
 
 [template]
 name = "{template}"

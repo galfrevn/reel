@@ -7,6 +7,7 @@ members = [
     "crates/reel-format",
     "crates/reel-render",
     "crates/reel-encode",
+    "crates/reel-audio",
     "crates/reel-cli",
 ]
 
@@ -22,7 +23,8 @@ reel-term = { path = "crates/reel-term" }
 reel-timeline = { path = "crates/reel-timeline" }
 reel-format = { path = "crates/reel-format" }
 reel-render = { path = "crates/reel-render" }
-reel-encode = { path = "crates/reel-encode" }
+reel-encode = { path = "crates/reel-encode", default-features = false }
+reel-audio = { path = "crates/reel-audio" }
 
 anyhow = "1"
 thiserror = "2"

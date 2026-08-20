@@ -37,7 +37,7 @@ impl Rgba {
 
 #[derive(Debug, Clone)]
 pub struct Theme {
-    pub name: &'static str,
+    pub name: String,
     pub fg: Rgba,
     pub bg: Rgba,
     pub cursor: Rgba,
@@ -90,7 +90,7 @@ fn hex(s: &str) -> Rgba {
 pub fn builtin(name: &str) -> Option<Theme> {
     let t = match name {
         "reel-dark" => Theme {
-            name: "reel-dark",
+            name: "reel-dark".to_string(),
             fg: hex("#e6e6eb"),
             bg: hex("#101014"),
             cursor: hex("#8ab4f8"),
@@ -102,7 +102,7 @@ pub fn builtin(name: &str) -> Option<Theme> {
             ],
         },
         "catppuccin-mocha" => Theme {
-            name: "catppuccin-mocha",
+            name: "catppuccin-mocha".to_string(),
             fg: hex("#cdd6f4"),
             bg: hex("#1e1e2e"),
             cursor: hex("#f5e0dc"),
@@ -114,7 +114,7 @@ pub fn builtin(name: &str) -> Option<Theme> {
             ],
         },
         "tokyo-night" => Theme {
-            name: "tokyo-night",
+            name: "tokyo-night".to_string(),
             fg: hex("#c0caf5"),
             bg: hex("#1a1b26"),
             cursor: hex("#c0caf5"),
@@ -126,7 +126,7 @@ pub fn builtin(name: &str) -> Option<Theme> {
             ],
         },
         "geist-dark" => Theme {
-            name: "geist-dark",
+            name: "geist-dark".to_string(),
             fg: hex("#ededed"),
             bg: hex("#000000"),
             cursor: hex("#ededed"),
@@ -138,7 +138,7 @@ pub fn builtin(name: &str) -> Option<Theme> {
             ],
         },
         "paper-light" => Theme {
-            name: "paper-light",
+            name: "paper-light".to_string(),
             fg: hex("#2d2d2d"),
             bg: hex("#f7f7f2"),
             cursor: hex("#0f62fe"),
@@ -149,13 +149,103 @@ pub fn builtin(name: &str) -> Option<Theme> {
                 hex("#4589ff"), hex("#a56eff"), hex("#08bdba"), hex("#161616"),
             ],
         },
+        "phosphor" => Theme {
+            name: "phosphor".to_string(),
+            fg: hex("#33ff66"),
+            bg: hex("#0a0f0a"),
+            cursor: hex("#66ffa0"),
+            ansi: [
+                hex("#0e140e"), hex("#2ee65c"), hex("#33ff66"), hex("#7dffa3"),
+                hex("#1fb84a"), hex("#57f584"), hex("#45ec74"), hex("#a4ffbf"),
+                hex("#1d7a3c"), hex("#49f277"), hex("#5cff85"), hex("#a0ffba"),
+                hex("#2ecb5d"), hex("#7affa1"), hex("#68f792"), hex("#ccffdb"),
+            ],
+        },
         _ => return None,
     };
     Some(t)
 }
 
 pub fn theme_names() -> &'static [&'static str] {
-    &["reel-dark", "catppuccin-mocha", "tokyo-night", "geist-dark", "paper-light"]
+    &["reel-dark", "catppuccin-mocha", "tokyo-night", "geist-dark", "paper-light", "phosphor"]
+}
+
+// ---------------------------------------------------------------------------
+// User themes: TOML files in the themes dir, written by `reel theme import`
+// ---------------------------------------------------------------------------
+
+/// Parses reel's native theme TOML (`fg`/`bg`/`cursor` + 16 `ansi` colors).
+pub fn from_toml(text: &str, fallback_name: &str) -> Result<Theme, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ThemeFile {
+        name: Option<String>,
+        fg: String,
+        bg: String,
+        cursor: Option<String>,
+        ansi: Vec<String>,
+    }
+    let f: ThemeFile = toml::from_str(text).map_err(|e| e.to_string())?;
+    if f.ansi.len() != 16 {
+        return Err(format!("`ansi` needs exactly 16 colors, got {}", f.ansi.len()));
+    }
+    let color = |s: &String| {
+        Rgba::from_hex(s).ok_or_else(|| format!("bad color `{s}` (expected #rrggbb)"))
+    };
+    let fg = color(&f.fg)?;
+    let mut ansi = [Rgba::rgb(0, 0, 0); 16];
+    for (i, s) in f.ansi.iter().enumerate() {
+        ansi[i] = color(s)?;
+    }
+    Ok(Theme {
+        name: f.name.unwrap_or_else(|| fallback_name.to_string()),
+        fg,
+        bg: color(&f.bg)?,
+        cursor: f.cursor.as_ref().map(&color).transpose()?.unwrap_or(fg),
+        ansi,
+    })
+}
+
+/// Serializes a theme as the native TOML format `from_toml` reads.
+pub fn to_toml(t: &Theme) -> String {
+    let hex = |c: Rgba| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b);
+    let mut out = String::new();
+    out.push_str(&format!("name = {:?}\n", t.name));
+    out.push_str(&format!("fg = \"{}\"\n", hex(t.fg)));
+    out.push_str(&format!("bg = \"{}\"\n", hex(t.bg)));
+    out.push_str(&format!("cursor = \"{}\"\n", hex(t.cursor)));
+    out.push_str("ansi = [\n");
+    for row in t.ansi.chunks(4) {
+        let cells: Vec<String> = row.iter().map(|&c| format!("\"{}\"", hex(c))).collect();
+        out.push_str(&format!("    {},\n", cells.join(", ")));
+    }
+    out.push_str("]\n");
+    out
+}
+
+/// Resolves a theme name: built-ins first, then `<themes_dir>/<name>.toml`.
+pub fn lookup(name: &str) -> Option<Theme> {
+    if let Some(t) = builtin(name) {
+        return Some(t);
+    }
+    let path = crate::paths::themes_dir()?.join(format!("{name}.toml"));
+    let text = std::fs::read_to_string(path).ok()?;
+    from_toml(&text, name).ok()
+}
+
+/// Names of themes installed in the user themes dir.
+pub fn user_theme_names() -> Vec<String> {
+    let Some(dir) = crate::paths::themes_dir() else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            (p.extension()? == "toml").then(|| p.file_stem()?.to_str().map(str::to_owned))?
+        })
+        .collect();
+    names.sort();
+    names
 }
 
 #[cfg(test)]
@@ -170,6 +260,25 @@ mod tests {
         assert_eq!(xterm_256(231), Rgba::rgb(255, 255, 255));
         assert_eq!(xterm_256(232), Rgba::rgb(8, 8, 8));
         assert_eq!(xterm_256(255), Rgba::rgb(238, 238, 238));
+    }
+
+    #[test]
+    fn toml_roundtrip_preserves_every_color() {
+        let t = builtin("tokyo-night").unwrap();
+        let text = to_toml(&t);
+        let back = from_toml(&text, "ignored").unwrap();
+        assert_eq!(back.name, t.name);
+        assert_eq!(back.fg, t.fg);
+        assert_eq!(back.bg, t.bg);
+        assert_eq!(back.cursor, t.cursor);
+        assert_eq!(back.ansi, t.ansi);
+    }
+
+    #[test]
+    fn from_toml_rejects_short_palettes() {
+        let err = from_toml("fg = \"#ffffff\"\nbg = \"#000000\"\nansi = [\"#111111\"]\n", "x")
+            .unwrap_err();
+        assert!(err.contains("16 colors"));
     }
 
     #[test]
