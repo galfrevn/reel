@@ -2,3 +2,4 @@ target/
 *.gif
 !assets/demos/*.gif
 .DS_Store
+.claude/worktrees/
