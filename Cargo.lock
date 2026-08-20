@@ -1177,7 +1177,7 @@ dependencies = [
 
 [[package]]
 name = "reel-audio"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "reel-timeline",
  "serde",
@@ -1187,7 +1187,7 @@ dependencies = [
 
 [[package]]
 name = "reel-cast"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1196,7 +1196,7 @@ dependencies = [
 
 [[package]]
 name = "reel-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1223,7 +1223,7 @@ dependencies = [
 
 [[package]]
 name = "reel-encode"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "color_quant 2.0.0",
  "env-libvpx-sys",
@@ -1237,7 +1237,7 @@ dependencies = [
 
 [[package]]
 name = "reel-format"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "reel-timeline",
  "serde",
@@ -1247,7 +1247,7 @@ dependencies = [
 
 [[package]]
 name = "reel-render"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "fontdb",
  "jpeg-decoder",
@@ -1265,7 +1265,7 @@ dependencies = [
 
 [[package]]
 name = "reel-term"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "alacritty_terminal",
  "bitflags 2.13.1",
@@ -1277,7 +1277,7 @@ dependencies = [
 
 [[package]]
 name = "reel-timeline"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "thiserror 2.0.20",
 ]
