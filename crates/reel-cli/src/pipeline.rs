@@ -336,7 +336,7 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
     )?;
 
     // (label, cq_level, fps, scale)
-    let base_fps = cfg.output.fps;
+    let base_fps = cfg.output.fps.unwrap_or(60);
     let base_scale = cfg.output.scale;
     let ladder: Vec<(String, u32, u32, u32)> = vec![
         ("as configured".into(), 24, base_fps, base_scale),
@@ -352,7 +352,7 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
             break;
         }
         let mut step_cfg = cfg.clone();
-        step_cfg.output.fps = *fps;
+        step_cfg.output.fps = Some(*fps);
         step_cfg.output.scale = *scale;
         if frames.as_ref().map(|(f, s, _)| (*f, *s)) != Some((*fps, *scale)) {
             let (rendered, warns) = render_frames(loaded, &step_cfg, quiet || i > 0)?;
@@ -366,7 +366,7 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
         let report = reel_encode::encode_webm(
             rendered,
             audio.as_deref(),
-            &WebmOptions { cq_level: *cq, ..Default::default() },
+            &WebmOptions { cq_level: *cq, cfr_fps: Some(*fps), ..Default::default() },
         )?;
         let size = report.bytes.len() as u64;
         let fits = budget_bytes.map(|b| size <= b).unwrap_or(true);
@@ -436,7 +436,7 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
     }
 
     // (label, fps, scale, max_colors)
-    let base_fps = cfg.output.fps;
+    let base_fps = cfg.output.fps.unwrap_or(30);
     let base_scale = cfg.output.scale;
     let ladder: Vec<(String, u32, u32, u16)> = vec![
         ("as configured".into(), base_fps, base_scale, 256),
@@ -460,7 +460,7 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
         prev = Some((*fps, *scale));
 
         let mut step_cfg = cfg.clone();
-        step_cfg.output.fps = *fps;
+        step_cfg.output.fps = Some(*fps);
         step_cfg.output.scale = *scale;
         let (frames, warns) = render_frames(loaded, &step_cfg, quiet || i > 0)?;
         if i == 0 {

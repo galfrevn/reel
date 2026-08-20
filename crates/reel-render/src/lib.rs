@@ -94,7 +94,7 @@ pub fn settings_from_config(cfg: &ReelConfig) -> Result<(RenderSettings, Vec<Str
             template: tpl,
             theme,
             scale: cfg.output.scale.clamp(1, 4) as f32,
-            fps: cfg.output.fps.clamp(1, 60),
+            fps: cfg.output.fps.unwrap_or(30).clamp(1, 120),
             aspect,
         },
         warnings,

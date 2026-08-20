@@ -72,8 +72,9 @@ pub struct OutputCfg {
     pub looping: bool,
     /// Target size like "800kb" / "2mb"; the encoder degrades to fit.
     pub budget: Option<String>,
-    /// Frame-rate cap; frames are emitted on change, not on a clock.
-    pub fps: u32,
+    /// Frame-rate cap / video frame rate. Defaults per format: 30 for GIF
+    /// (size), 60 for WebM (played at constant frame rate).
+    pub fps: Option<u32>,
     /// Supersampling factor for crisp text.
     pub scale: u32,
     /// Canvas aspect ratio like "16:9"; the canvas grows (never crops) to fit.
@@ -82,7 +83,7 @@ pub struct OutputCfg {
 
 impl Default for OutputCfg {
     fn default() -> Self {
-        OutputCfg { file: None, looping: true, budget: None, fps: 30, scale: 2, aspect: None }
+        OutputCfg { file: None, looping: true, budget: None, fps: None, scale: 2, aspect: None }
     }
 }
 

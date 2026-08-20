@@ -3,15 +3,15 @@
   "evals": [
     {
       "id": 1,
-      "prompt": "I have a recording of my CLI tool at examples/demo.cast. Can you turn it into a nice GIF for my README? It should be small, under 500kb ideally.",
+      "prompt": "I have a recording of my CLI tool at evals/fixtures/demo.cast. Can you turn it into a nice GIF for my README? It should be small, under 500kb ideally.",
       "expected_output": "A .reel file referencing the cast with a budget of 500kb and a sensible template, rendered to a GIF under 500kb, with the agent verifying the size and showing the result.",
-      "files": ["examples/demo.cast"]
+      "files": ["evals/fixtures/demo.cast"]
     },
     {
       "id": 2,
-      "prompt": "this demo gif is way too long, theres like 20 seconds where nothing happens in the middle while the install runs. the cast is at examples/demo.cast — can u speed that part up and cut the boring intro",
+      "prompt": "this demo gif is way too long, theres like 20 seconds where nothing happens in the middle while the install runs. the cast is at evals/fixtures/demo.cast — can u speed that part up and cut the boring intro",
       "expected_output": "Agent inspects the cast to find the idle region, writes a .reel with trim + speed ops anchored to source time, renders, and confirms the new duration.",
-      "files": ["examples/demo.cast"]
+      "files": ["evals/fixtures/demo.cast"]
     },
     {
       "id": 3,

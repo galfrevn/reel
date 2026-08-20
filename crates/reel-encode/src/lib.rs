@@ -43,11 +43,15 @@ pub struct WebmOptions {
     pub bitrate_kbps: Option<u32>,
     /// libvpx speed dial, 0 (slowest/best) to 9.
     pub cpu_used: i32,
+    /// Emit constant-frame-rate video at this fps, duplicating stills.
+    /// Players judder on variable frame rate; VP9 encodes an unchanged
+    /// frame in a few hundred bytes, so CFR costs almost nothing.
+    pub cfr_fps: Option<u32>,
 }
 
 impl Default for WebmOptions {
     fn default() -> Self {
-        WebmOptions { cq_level: 24, bitrate_kbps: None, cpu_used: 2 }
+        WebmOptions { cq_level: 24, bitrate_kbps: None, cpu_used: 2, cfr_fps: Some(60) }
     }
 }
 
@@ -84,12 +88,42 @@ pub fn encode_webm(
     })?;
     let mut blocks = Vec::with_capacity(frames.len() + 64);
     let mut clock_ms = 0f64;
-    for f in frames {
-        let pts = clock_ms.round() as i64;
-        clock_ms += f.duration_s * 1000.0;
-        let dur = (clock_ms.round() as i64 - pts).max(1) as u64;
-        let img = yuv::rgba_to_i420(w, h, &f.data);
-        blocks.extend(enc.encode(&img, pts, dur)?);
+    match opts.cfr_fps {
+        Some(fps) => {
+            // Constant frame rate: walk a fixed clock, converting to YUV
+            // only when the source frame actually changes underneath it.
+            let fps = fps.clamp(1, 120) as f64;
+            let total_s: f64 = frames.iter().map(|f| f.duration_s).sum();
+            let n = ((total_s * fps).round() as usize).max(1);
+            let mut src = 0usize;
+            let mut src_end = frames[0].duration_s;
+            let mut img = yuv::rgba_to_i420(w, h, &frames[0].data);
+            for k in 0..n {
+                let t = k as f64 / fps;
+                let mut changed = false;
+                while t >= src_end - 1e-9 && src + 1 < frames.len() {
+                    src += 1;
+                    src_end += frames[src].duration_s;
+                    changed = true;
+                }
+                if changed {
+                    img = yuv::rgba_to_i420(w, h, &frames[src].data);
+                }
+                let pts = (k as f64 * 1000.0 / fps).round() as i64;
+                let next_pts = ((k + 1) as f64 * 1000.0 / fps).round() as i64;
+                blocks.extend(enc.encode(&img, pts, (next_pts - pts).max(1) as u64)?);
+            }
+            clock_ms = total_s * 1000.0;
+        }
+        None => {
+            for f in frames {
+                let pts = clock_ms.round() as i64;
+                clock_ms += f.duration_s * 1000.0;
+                let dur = (clock_ms.round() as i64 - pts).max(1) as u64;
+                let img = yuv::rgba_to_i420(w, h, &f.data);
+                blocks.extend(enc.encode(&img, pts, dur)?);
+            }
+        }
     }
     blocks.extend(enc.finish()?);
     let frame_count = blocks.len();
