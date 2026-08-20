@@ -12,7 +12,6 @@ mod opus;
 mod vp9;
 
 use std::borrow::Cow;
-use std::collections::HashMap;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EncodeError {
@@ -44,9 +43,11 @@ pub struct WebmOptions {
     pub bitrate_kbps: Option<u32>,
     /// libvpx speed dial, 0 (slowest/best) to 9.
     pub cpu_used: i32,
-    /// Emit constant-frame-rate video at this fps, duplicating stills.
-    /// Players judder on variable frame rate; VP9 encodes an unchanged
-    /// frame in a few hundred bytes, so CFR costs almost nothing.
+    /// Emit frames on this fps tick grid, re-holding stills at a steady
+    /// cadence. Players judder on fully variable frame rate, but encoding
+    /// every duplicate tick made VP9 ~80% of render time — so stills are
+    /// re-emitted at ~5fps instead, which keeps a regular cadence while
+    /// skipping most duplicate encodes.
     pub cfr_fps: Option<u32>,
 }
 
@@ -115,15 +116,27 @@ impl WebmEncoder {
         let end = self.clock_s + dur_s;
         match self.cfr {
             Some(fps) => {
-                // Convert only when at least one tick shows this frame.
-                if (self.tick as f64) / fps < end - 1e-9 {
+                // Ticks whose display window falls inside this frame.
+                let mut ticks: Vec<usize> = Vec::new();
+                while (self.tick as f64) / fps < end - 1e-9 {
+                    ticks.push(self.tick);
+                    self.tick += 1;
+                }
+                if !ticks.is_empty() {
                     yuv::rgba_to_i420_into(self.width, self.height, rgba, &mut self.i420);
-                    while (self.tick as f64) / fps < end - 1e-9 {
-                        let pts = (self.tick as f64 * 1000.0 / fps).round() as i64;
-                        let next = ((self.tick + 1) as f64 * 1000.0 / fps).round() as i64;
-                        self.blocks
-                            .extend(self.enc.encode(&self.i420, pts, (next - pts).max(1) as u64)?);
-                        self.tick += 1;
+                    // The first tick carries the content change; the rest
+                    // re-hold the same image at ~5fps so fixed-rate players
+                    // keep a steady cadence without paying a full encode
+                    // for every duplicate tick.
+                    let hold = (fps / 5.0).round().max(1.0) as usize;
+                    let tick_ms = |t: usize| (t as f64 * 1000.0 / fps).round() as i64;
+                    let mut j = 0;
+                    while j < ticks.len() {
+                        let jn = (j + hold).min(ticks.len());
+                        let pts = tick_ms(ticks[j]);
+                        let dur = (tick_ms(ticks[jn - 1] + 1) - pts).max(1) as u64;
+                        self.blocks.extend(self.enc.encode(&self.i420, pts, dur)?);
+                        j = jn;
                     }
                 }
             }
@@ -315,10 +328,85 @@ pub struct GifReport {
 // hold every RGBA frame in memory — at 1080p that was gigabytes.
 // ---------------------------------------------------------------------------
 
+/// Open-addressed RGB → palette-index map. Frames repeat a few thousand
+/// distinct colors, so the table stays cache-resident; the std HashMap's
+/// SipHash per pixel used to dominate both palette passes.
+struct ColorMap {
+    /// 24-bit RGB keys; `u32::MAX` marks an empty slot.
+    keys: Vec<u32>,
+    vals: Vec<u8>,
+    len: usize,
+}
+
+impl ColorMap {
+    fn new() -> Self {
+        ColorMap { keys: vec![u32::MAX; 1024], vals: vec![0; 1024], len: 0 }
+    }
+
+    #[inline]
+    fn slot(keys: &[u32], key: u32) -> usize {
+        let mask = keys.len() - 1;
+        let mut i = (key.wrapping_mul(0x9E37_79B1) >> 8) as usize & mask;
+        while keys[i] != key && keys[i] != u32::MAX {
+            i = (i + 1) & mask;
+        }
+        i
+    }
+
+    #[inline]
+    fn get(&self, key: u32) -> Option<u8> {
+        let i = Self::slot(&self.keys, key);
+        (self.keys[i] == key).then(|| self.vals[i])
+    }
+
+    #[inline]
+    fn insert(&mut self, key: u32, val: u8) {
+        if self.len * 4 >= self.keys.len() * 3 {
+            self.grow();
+        }
+        let i = Self::slot(&self.keys, key);
+        if self.keys[i] == u32::MAX {
+            self.keys[i] = key;
+            self.vals[i] = val;
+            self.len += 1;
+        }
+    }
+
+    fn grow(&mut self) {
+        let mut next =
+            ColorMap { keys: vec![u32::MAX; self.keys.len() * 2], vals: vec![0; self.keys.len() * 2], len: self.len };
+        for (k, v) in self.keys.iter().zip(&self.vals) {
+            if *k != u32::MAX {
+                let i = Self::slot(&next.keys, *k);
+                next.keys[i] = *k;
+                next.vals[i] = *v;
+            }
+        }
+        *self = next;
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (u32, u8)> + '_ {
+        self.keys
+            .iter()
+            .zip(&self.vals)
+            .filter(|(k, _)| **k != u32::MAX)
+            .map(|(k, v)| (*k, *v))
+    }
+}
+
+#[inline]
+fn pack_rgb(px: &[u8]) -> u32 {
+    (px[0] as u32) << 16 | (px[1] as u32) << 8 | px[2] as u32
+}
+
 /// Pass 1: feed every frame's pixels to decide the palette.
 pub struct GifPaletteBuilder {
     max_colors: u16,
-    colors: HashMap<[u8; 3], u8>,
+    colors: ColorMap,
     exact: bool,
     /// RGBA samples for NeuQuant, kept bounded by doubling the stride.
     samples: Vec<u8>,
@@ -332,7 +420,7 @@ impl GifPaletteBuilder {
     pub fn new(max_colors: u16) -> Self {
         GifPaletteBuilder {
             max_colors: max_colors.clamp(2, 256),
-            colors: HashMap::new(),
+            colors: ColorMap::new(),
             exact: true,
             samples: Vec::new(),
             stride: 17, // co-prime with row lengths, avoids column bias
@@ -341,18 +429,20 @@ impl GifPaletteBuilder {
     }
 
     pub fn feed(&mut self, rgba: &[u8]) {
+        // Terminal frames are long runs of one color; remembering the last
+        // pixel skips the map for most of the frame.
+        let mut last = u32::MAX;
         for px in rgba.chunks_exact(4) {
-            if self.exact {
-                let key = [px[0], px[1], px[2]];
-                if !self.colors.contains_key(&key) {
-                    if self.colors.len() >= self.max_colors as usize {
-                        self.exact = false;
-                    } else {
-                        let next = self.colors.len() as u8;
-                        self.colors.insert(key, next);
-                    }
+            let key = pack_rgb(px);
+            if self.exact && key != last && self.colors.get(key).is_none() {
+                if self.colors.len() >= self.max_colors as usize {
+                    self.exact = false;
+                } else {
+                    let next = self.colors.len() as u8;
+                    self.colors.insert(key, next);
                 }
             }
+            last = key;
             // Sample regardless: exactness can fall over in a later frame.
             if self.phase == 0 {
                 self.samples.extend_from_slice(&[px[0], px[1], px[2], 255]);
@@ -371,10 +461,13 @@ impl GifPaletteBuilder {
     }
 
     pub fn finish(self) -> GifPalette {
-        if self.exact && !self.colors.is_empty() {
+        if self.exact && self.colors.len() > 0 {
             let mut rgb = vec![0u8; self.colors.len() * 3];
-            for (color, idx) in &self.colors {
-                rgb[*idx as usize * 3..*idx as usize * 3 + 3].copy_from_slice(color);
+            for (key, idx) in self.colors.iter() {
+                let o = idx as usize * 3;
+                rgb[o] = (key >> 16) as u8;
+                rgb[o + 1] = (key >> 8) as u8;
+                rgb[o + 2] = key as u8;
             }
             let n = self.colors.len() as u16;
             GifPalette { rgb, mode: PaletteMode::Exact(n), lookup: Lookup::Exact(self.colors) }
@@ -387,7 +480,7 @@ impl GifPaletteBuilder {
                 mode: PaletteMode::Quantized(n),
                 // index_of is a search; terminal frames repeat a few
                 // thousand distinct RGBs, so memoizing makes it ~free.
-                lookup: Lookup::Quant { nq, memo: HashMap::new() },
+                lookup: Lookup::Quant { nq, memo: ColorMap::new() },
             }
         }
     }
@@ -400,17 +493,23 @@ pub struct GifPalette {
 }
 
 enum Lookup {
-    Exact(HashMap<[u8; 3], u8>),
-    Quant { nq: color_quant::NeuQuant, memo: HashMap<[u8; 3], u8> },
+    Exact(ColorMap),
+    Quant { nq: color_quant::NeuQuant, memo: ColorMap },
 }
 
 impl GifPalette {
     fn index(&mut self, px: &[u8]) -> u8 {
+        let key = pack_rgb(px);
         match &mut self.lookup {
-            Lookup::Exact(map) => *map.get(&[px[0], px[1], px[2]]).unwrap_or(&0),
-            Lookup::Quant { nq, memo } => *memo
-                .entry([px[0], px[1], px[2]])
-                .or_insert_with(|| nq.index_of(&[px[0], px[1], px[2], 255]) as u8),
+            Lookup::Exact(map) => map.get(key).unwrap_or(0),
+            Lookup::Quant { nq, memo } => match memo.get(key) {
+                Some(i) => i,
+                None => {
+                    let i = nq.index_of(&[px[0], px[1], px[2], 255]) as u8;
+                    memo.insert(key, i);
+                    i
+                }
+            },
         }
     }
 }
@@ -421,6 +520,8 @@ pub struct GifStream<W: std::io::Write> {
     enc: gif::Encoder<W>,
     palette: GifPalette,
     prev: Option<Vec<u8>>,
+    /// Recycled index buffer — swaps with `prev` so no frame allocates.
+    spare: Vec<u8>,
     carry: f64,
     width: u32,
     height: u32,
@@ -437,7 +538,7 @@ impl<W: std::io::Write> GifStream<W> {
     ) -> Result<Self, EncodeError> {
         let mut enc = gif::Encoder::new(out, width as u16, height as u16, &palette.rgb)?;
         enc.set_repeat(if looping { gif::Repeat::Infinite } else { gif::Repeat::Finite(0) })?;
-        Ok(GifStream { enc, palette, prev: None, carry: 0.0, width, height, frames: 0 })
+        Ok(GifStream { enc, palette, prev: None, spare: Vec::new(), carry: 0.0, width, height, frames: 0 })
     }
 
     pub fn push(&mut self, rgba: &[u8], dur_s: f64) -> Result<(), EncodeError> {
@@ -448,7 +549,21 @@ impl<W: std::io::Write> GifStream<W> {
         self.carry = exact_cs - cs;
         let delay = cs as u16;
 
-        let idx: Vec<u8> = rgba.chunks_exact(4).map(|px| self.palette.index(px)).collect();
+        let mut idx = std::mem::take(&mut self.spare);
+        idx.clear();
+        idx.reserve(rgba.len() / 4);
+        // Runs of one color dominate terminal frames; memoizing the last
+        // pixel skips the palette lookup for most of the frame.
+        let mut last = u32::MAX;
+        let mut last_idx = 0u8;
+        for px in rgba.chunks_exact(4) {
+            let key = pack_rgb(px);
+            if key != last {
+                last_idx = self.palette.index(px);
+                last = key;
+            }
+            idx.push(last_idx);
+        }
         let (w, h) = (self.width as usize, self.height as usize);
         let mut frame = match &self.prev {
             None => gif::Frame {
@@ -488,7 +603,10 @@ impl<W: std::io::Write> GifStream<W> {
         frame.delay = delay;
         frame.dispose = gif::DisposalMethod::Keep;
         self.enc.write_frame(&frame)?;
-        self.prev = Some(idx);
+        drop(frame);
+        if let Some(old) = self.prev.replace(idx) {
+            self.spare = old;
+        }
         self.frames += 1;
         Ok(())
     }
@@ -620,7 +738,13 @@ impl<W: std::io::Write> ApngStream<W> {
                 self.writer.write_image_data(&buf)?;
             }
         }
-        self.prev = Some(rgba.to_vec());
+        match &mut self.prev {
+            Some(p) => {
+                p.clear();
+                p.extend_from_slice(rgba);
+            }
+            None => self.prev = Some(rgba.to_vec()),
+        }
         self.frames += 1;
         Ok(())
     }

@@ -193,9 +193,7 @@ fn draw_cursor(
 
 pub fn fill(pix: &mut Pixmap, c: Rgba) {
     let px = premul(c);
-    for p in pix.pixels_mut() {
-        *p = px;
-    }
+    pix.pixels_mut().fill(px);
 }
 
 pub fn fill_rect(pix: &mut Pixmap, x: i32, y: i32, w: i32, h: i32, c: Rgba) {
@@ -215,28 +213,39 @@ pub fn fill_rect(pix: &mut Pixmap, x: i32, y: i32, w: i32, h: i32, c: Rgba) {
     let data = pix.pixels_mut();
     for yy in y0..y1 {
         let row = yy as usize * pw as usize;
-        for xx in x0..x1 {
-            let d = &mut data[row + xx as usize];
-            *d = if opaque { src } else { blend(src, *d) };
+        if opaque {
+            data[row + x0 as usize..row + x1 as usize].fill(src);
+        } else {
+            for d in &mut data[row + x0 as usize..row + x1 as usize] {
+                *d = blend(src, *d);
+            }
         }
     }
 }
 
 pub fn blit_mask(pix: &mut Pixmap, x: i32, y: i32, w: u32, h: u32, mask: &[u8], color: Rgba) {
     let (pw, ph) = (pix.width() as i32, pix.height() as i32);
+    let gx0 = (-x).max(0);
+    let gy0 = (-y).max(0);
+    let gx1 = (pw - x).min(w as i32);
+    let gy1 = (ph - y).min(h as i32);
+    if gx0 >= gx1 || gy0 >= gy1 {
+        return;
+    }
+    let solid = premul(color);
     let data = pix.pixels_mut();
-    for gy in 0..h as i32 {
-        let py = y + gy;
-        if py < 0 || py >= ph {
-            continue;
-        }
-        for gx in 0..w as i32 {
-            let px = x + gx;
-            if px < 0 || px >= pw {
+    for gy in gy0..gy1 {
+        let srow = gy as usize * w as usize;
+        let drow = (y + gy) as isize * pw as isize + x as isize;
+        for gx in gx0..gx1 {
+            let a = mask[srow + gx as usize] as u32;
+            if a == 0 {
                 continue;
             }
-            let a = mask[(gy as u32 * w + gx as u32) as usize] as u32;
-            if a == 0 {
+            let d = &mut data[(drow + gx as isize) as usize];
+            // Fully-covered pixels (glyph interiors) skip the blend math.
+            if a == 255 && color.a == 255 {
+                *d = solid;
                 continue;
             }
             let a = a * color.a as u32 / 255;
@@ -247,7 +256,6 @@ pub fn blit_mask(pix: &mut Pixmap, x: i32, y: i32, w: u32, h: u32, mask: &[u8], 
                 a as u8,
             )
             .unwrap();
-            let d = &mut data[py as usize * pw as usize + px as usize];
             *d = blend(src, *d);
         }
     }
@@ -255,18 +263,19 @@ pub fn blit_mask(pix: &mut Pixmap, x: i32, y: i32, w: u32, h: u32, mask: &[u8], 
 
 pub fn blit_rgba(pix: &mut Pixmap, x: i32, y: i32, w: u32, h: u32, rgba: &[u8]) {
     let (pw, ph) = (pix.width() as i32, pix.height() as i32);
+    let gx0 = (-x).max(0);
+    let gy0 = (-y).max(0);
+    let gx1 = (pw - x).min(w as i32);
+    let gy1 = (ph - y).min(h as i32);
+    if gx0 >= gx1 || gy0 >= gy1 {
+        return;
+    }
     let data = pix.pixels_mut();
-    for gy in 0..h as i32 {
-        let py = y + gy;
-        if py < 0 || py >= ph {
-            continue;
-        }
-        for gx in 0..w as i32 {
-            let px = x + gx;
-            if px < 0 || px >= pw {
-                continue;
-            }
-            let i = ((gy as u32 * w + gx as u32) * 4) as usize;
+    for gy in gy0..gy1 {
+        let srow = gy as usize * w as usize;
+        let drow = (y + gy) as isize * pw as isize + x as isize;
+        for gx in gx0..gx1 {
+            let i = (srow + gx as usize) * 4;
             let a = rgba[i + 3] as u32;
             if a == 0 {
                 continue;
@@ -278,7 +287,7 @@ pub fn blit_rgba(pix: &mut Pixmap, x: i32, y: i32, w: u32, h: u32, rgba: &[u8]) 
                 a as u8,
             )
             .unwrap();
-            let d = &mut data[py as usize * pw as usize + px as usize];
+            let d = &mut data[(drow + gx as isize) as usize];
             *d = blend(src, *d);
         }
     }
