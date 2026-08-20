@@ -53,9 +53,7 @@ pub struct WebmOptions {
 
 impl Default for WebmOptions {
     fn default() -> Self {
-        // cpu_used 4 is 2-3x faster than 2 with no visible cost on screen
-        // content (which VP9E_SET_TUNE_CONTENT already optimizes for).
-        WebmOptions { cq_level: 24, bitrate_kbps: None, cpu_used: 4, cfr_fps: Some(60) }
+        WebmOptions { cq_level: 24, bitrate_kbps: None, cpu_used: 2, cfr_fps: Some(60) }
     }
 }
 

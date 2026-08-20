@@ -75,9 +75,6 @@ impl Vp9Encoder {
                 // Terminal output is the textbook screen-content case.
                 (vp8e_enc_control_id::VP9E_SET_TUNE_CONTENT as i32, vp9e_tune_content::VP9E_CONTENT_SCREEN as i32),
                 (vp8e_enc_control_id::VP9E_SET_ROW_MT as i32, 1),
-                // Without tiles, g_threads barely helps VP9; 4 tile columns
-                // let the encoder actually use the cores.
-                (vp8e_enc_control_id::VP9E_SET_TILE_COLUMNS as i32, 2),
                 // Tag the bitstream to match yuv.rs's BT.709 conversion.
                 (vp8e_enc_control_id::VP9E_SET_COLOR_SPACE as i32, vpx_color_space::VPX_CS_BT_709 as i32),
             ];
