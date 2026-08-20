@@ -1,4 +1,5 @@
 mod pipeline;
+mod record;
 mod watch;
 
 use anyhow::{bail, Context, Result};
@@ -53,6 +54,15 @@ enum Command {
         #[arg(long, value_name = "PORT", num_args = 0..=1, default_missing_value = "4171")]
         serve: Option<u16>,
     },
+    /// Record a terminal session to a .cast (+ .reelmeta input sidecar)
+    Record {
+        /// Where to write the recording
+        #[arg(long, short, default_value = "session.cast")]
+        out: PathBuf,
+        /// Command to record, after `--` (defaults to your shell)
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
     /// Render a single frame to PNG
     Shot {
         file: PathBuf,
@@ -93,6 +103,7 @@ fn run() -> Result<()> {
             pipeline::render(&file, out, template, budget, scale, no_audio, quiet)
         }
         Command::Watch { file, out, template, serve } => watch::watch(&file, out, template, serve),
+        Command::Record { out, command } => record::record(&out, command),
         Command::Shot { file, at, out, template } => pipeline::shot(&file, &at, out, template),
         Command::Inspect { file } => pipeline::inspect(&file),
         Command::Init { template, out } => init(&template, &out),
