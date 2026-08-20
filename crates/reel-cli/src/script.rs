@@ -6,6 +6,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use reel_cast::{CastHeader, CastWriter, InputEvent, ReelMeta};
+use crate::queries::QueryResponder;
 use reel_format::{ReelFile, ScriptOp, TypingCfg};
 use reel_term::LiveTerm;
 use std::io::Read;
@@ -40,6 +41,14 @@ pub fn capture(path: &Path, file: &ReelFile, quiet: bool) -> Result<PathBuf> {
     builder.args(&cmd);
     builder.env("TERM", "xterm-256color");
     builder.env("COLORTERM", "truecolor");
+    // `[env]` table: extra variables for the child (PS1, LANG, …).
+    if let Some(toml::Value::Table(env)) = &file.config.env {
+        for (k, v) in env {
+            if let toml::Value::String(v) = v {
+                builder.env(k, v);
+            }
+        }
+    }
     if let Some(dir) = path.parent() {
         if dir.as_os_str().is_empty() {
             builder.cwd(std::env::current_dir()?);
@@ -73,21 +82,36 @@ pub fn capture(path: &Path, file: &ReelFile, quiet: bool) -> Result<PathBuf> {
         .map_err(|e| anyhow!("spawning `{command}`: {e}"))?;
     drop(pair.slave);
     let mut reader = pair.master.try_clone_reader().map_err(|e| anyhow!("pty reader: {e}"))?;
-    let mut pty_writer = pair.master.take_writer().map_err(|e| anyhow!("pty writer: {e}"))?;
+    let pty_writer = Arc::new(Mutex::new(
+        pair.master.take_writer().map_err(|e| anyhow!("pty writer: {e}"))?,
+    ));
 
-    // Output → cast + live grid (for wait_text) + idle clock.
+    // Output → cast + live grid (for wait_text) + idle clock, answering
+    // terminal queries (DA1, DSR, OSC color…) so headless programs don't
+    // hang or bail waiting for a terminal that isn't there (SPEC §9).
     let out_thread = {
         let writer = writer.clone();
         let live = live.clone();
         let last_output = last_output.clone();
+        let responder_writer = pty_writer.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
             let mut pending: Vec<u8> = Vec::new();
+            let mut responder = QueryResponder::default();
             while let Ok(n) = reader.read(&mut buf) {
                 if n == 0 {
                     break;
                 }
-                live.lock().unwrap().feed(&buf[..n]);
+                let cursor = {
+                    let mut lt = live.lock().unwrap();
+                    lt.feed(&buf[..n]);
+                    lt.cursor()
+                };
+                for resp in responder.scan(&buf[..n], cursor) {
+                    let mut w = responder_writer.lock().unwrap();
+                    let _ = w.write_all(&resp);
+                    let _ = w.flush();
+                }
                 *last_output.lock().unwrap() = Instant::now();
                 pending.extend_from_slice(&buf[..n]);
                 // Same UTF-8 carry rule as `reel record`.
@@ -115,9 +139,10 @@ pub fn capture(path: &Path, file: &ReelFile, quiet: bool) -> Result<PathBuf> {
         let ms = cfg.delay_ms as f64 * (1.0 + cfg.jitter * unit);
         Duration::from_millis(ms.max(15.0) as u64)
     };
-    let mut send = |bytes: &[u8], inputs: &mut Vec<InputEvent>| -> Result<()> {
-        pty_writer.write_all(bytes)?;
-        pty_writer.flush()?;
+    let send = |bytes: &[u8], inputs: &mut Vec<InputEvent>| -> Result<()> {
+        let mut w = pty_writer.lock().unwrap();
+        w.write_all(bytes)?;
+        w.flush()?;
         inputs.push(InputEvent {
             t: started.elapsed().as_secs_f64(),
             kind: "key".into(),

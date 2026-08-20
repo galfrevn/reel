@@ -231,6 +231,12 @@ impl LiveTerm {
     pub fn contains(&self, needle: &str) -> bool {
         self.text().contains(needle)
     }
+
+    /// Current cursor position, zero-based (col, row) — for CPR answers.
+    pub fn cursor(&self) -> (u16, u16) {
+        let p = self.term.grid().cursor.point;
+        (p.column.0 as u16, p.line.0.max(0) as u16)
+    }
 }
 
 /// Replays a cast and returns one snapshot per *visible change*, in source
