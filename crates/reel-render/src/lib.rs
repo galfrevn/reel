@@ -2,6 +2,7 @@
 
 pub mod chrome;
 pub mod font;
+pub mod paths;
 pub mod plan;
 pub mod raster;
 pub mod template;
@@ -73,8 +74,11 @@ pub fn settings_from_config(cfg: &ReelConfig) -> Result<(RenderSettings, Vec<Str
     }
 
     let theme_name = style.theme.as_deref().unwrap_or(tpl.theme);
-    let theme = theme::builtin(theme_name).ok_or_else(|| {
-        RenderError::UnknownTheme(theme_name.to_string(), theme::theme_names().join(", "))
+    let theme = theme::lookup(theme_name).ok_or_else(|| {
+        let mut names: Vec<String> =
+            theme::theme_names().iter().map(|s| s.to_string()).collect();
+        names.extend(theme::user_theme_names());
+        RenderError::UnknownTheme(theme_name.to_string(), names.join(", "))
     })?;
 
     Ok((

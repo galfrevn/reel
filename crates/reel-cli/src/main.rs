@@ -1,5 +1,6 @@
 mod pipeline;
 mod record;
+mod themes;
 mod watch;
 
 use anyhow::{bail, Context, Result};
@@ -86,8 +87,35 @@ enum Command {
     },
     /// List built-in templates
     Templates,
-    /// List built-in themes
+    /// List available themes (alias for `theme list`)
     Themes,
+    /// Manage themes
+    Theme {
+        #[command(subcommand)]
+        action: ThemeAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ThemeAction {
+    /// List built-in and imported themes
+    List,
+    /// Import a theme file (base16 .yaml, alacritty .toml/.yml, iTerm2 .itermcolors)
+    Import {
+        file: PathBuf,
+        /// Name to install it under (defaults to the scheme/file name)
+        #[arg(long)]
+        name: Option<String>,
+    },
+}
+
+fn list_themes() {
+    for name in reel_render::theme::theme_names() {
+        println!("{name}");
+    }
+    for name in reel_render::theme::user_theme_names() {
+        println!("{name} (imported)");
+    }
 }
 
 fn main() {
@@ -114,11 +142,12 @@ fn run() -> Result<()> {
             }
             Ok(())
         }
-        Command::Themes => {
-            for name in reel_render::theme::theme_names() {
-                println!("{name}");
-            }
+        Command::Themes | Command::Theme { action: ThemeAction::List } => {
+            list_themes();
             Ok(())
+        }
+        Command::Theme { action: ThemeAction::Import { file, name } } => {
+            themes::import(&file, name)
         }
     }
 }

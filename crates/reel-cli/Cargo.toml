@@ -23,3 +23,7 @@ clap = { version = "4", features = ["derive"] }
 notify = "8"
 portable-pty = "0.9.0"
 crossterm = "0.29.0"
+serde_yaml = "0.9"
+plist = "1"
+serde.workspace = true
+toml.workspace = true
