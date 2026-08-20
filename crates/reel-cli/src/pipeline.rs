@@ -5,7 +5,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use reel_cast::{Cast, EventKind, ReelMeta};
 use reel_encode::{GifOptions, PaletteMode, RgbaFrame, WebmOptions};
 use reel_format::{parse_budget, ReelConfig, ReelFile, TimeExpr};
-use reel_render::{pixmap_to_rgba, plan, settings_from_config, Renderer};
+use reel_render::{pixmap_to_rgba, plan_with, settings_from_config, Renderer};
 use reel_term::Snapshot;
 use reel_timeline::{AudioOp, Timeline, VisualOp};
 use std::path::{Path, PathBuf};
@@ -104,10 +104,11 @@ fn uniform_dims(snaps: &[Snapshot]) -> bool {
 fn render_frames(loaded: &Loaded, cfg: &ReelConfig, quiet: bool) -> Result<(Vec<RgbaFrame>, Vec<String>)> {
     let (settings, mut warnings) = settings_from_config(cfg)?;
     let fps = settings.fps;
+    let settings_cursor_blink = settings.cursor_blink;
     let (mut renderer, font_warnings) = Renderer::new(settings)?;
     renderer.fit_exact(loaded.cast.cols(), loaded.cast.rows());
     warnings.extend(font_warnings);
-    let frames = plan(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps);
+    let frames = plan_with(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps, settings_cursor_blink);
     if !quiet {
         eprintln!(
             "rendering {} frames ({:.1}s output from {:.1}s recording)…",
@@ -379,6 +380,7 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
         step_cfg.output.scale = *scale;
         let (settings, warns) = settings_from_config(&step_cfg)?;
         let fps_used = settings.fps;
+        let blink = settings.cursor_blink;
         // One renderer across rungs keeps the glyph cache warm.
         let font_warns = match renderer.as_mut() {
             Some(r) => r.set_settings(settings)?,
@@ -394,7 +396,7 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
         }
         let r = renderer.as_mut().unwrap();
         r.fit_exact(loaded.cast.cols(), loaded.cast.rows());
-        let plans = plan(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps_used);
+        let plans = plan_with(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps_used, blink);
         if i == 0 && !quiet {
             eprintln!(
                 "rendering {} frames ({:.1}s output from {:.1}s recording)…",
@@ -514,6 +516,7 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
         step_cfg.output.scale = *scale;
         let (settings, warns) = settings_from_config(&step_cfg)?;
         let fps_used = settings.fps;
+        let blink = settings.cursor_blink;
         let font_warns = match renderer.as_mut() {
             Some(r) => r.set_settings(settings)?,
             None => {
@@ -528,7 +531,7 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
         }
         let r = renderer.as_mut().unwrap();
         r.fit_exact(loaded.cast.cols(), loaded.cast.rows());
-        let plans = plan(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps_used);
+        let plans = plan_with(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps_used, blink);
         if i == 0 && !quiet {
             eprintln!(
                 "rendering {} frames ({:.1}s output from {:.1}s recording)…",
@@ -611,9 +614,10 @@ pub fn shot(path: &Path, at: &str, out: Option<PathBuf>, template: Option<String
     let cfg = loaded.file.config.clone();
     let (settings, _) = settings_from_config(&cfg)?;
     let fps = settings.fps;
+    let settings_cursor_blink = settings.cursor_blink;
     let (mut renderer, _) = Renderer::new(settings)?;
     renderer.fit_exact(loaded.cast.cols(), loaded.cast.rows());
-    let frames = plan(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps);
+    let frames = plan_with(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps, settings_cursor_blink);
     let frame = frames
         .iter()
         .rev()
@@ -727,6 +731,7 @@ pub fn render_for_watch(
 
     let (settings, _) = settings_from_config(&file.config)?;
     let fps = settings.fps;
+    let watch_blink = settings.cursor_blink;
     match cache.renderer.as_mut() {
         Some(r) => {
             r.set_settings(settings)?;
@@ -735,7 +740,7 @@ pub fn render_for_watch(
     }
     let renderer = cache.renderer.as_mut().unwrap();
 
-    let frames = plan(&timeline, snapshots, &program.visuals, fps);
+    let frames = plan_with(&timeline, snapshots, &program.visuals, fps, watch_blink);
     let mut rgba = Vec::with_capacity(frames.len());
     for f in &frames {
         let pix = renderer.render_frame(&snapshots[f.snapshot], f);

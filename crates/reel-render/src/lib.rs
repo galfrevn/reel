@@ -9,7 +9,7 @@ pub mod raster;
 pub mod template;
 pub mod theme;
 
-pub use plan::{plan, Camera, FramePlan};
+pub use plan::{plan, plan_with, Camera, FramePlan};
 pub use template::{Template, WindowStyle};
 pub use theme::{Rgba, Theme};
 pub use tiny_skia::Pixmap;
@@ -238,7 +238,7 @@ impl Renderer {
             raster::raster_grid_into(
                 &mut self.raster,
                 snap,
-                &GridStyle { theme: &theme, font_size: zoom_px, line_height: tpl.line_height },
+                &GridStyle { theme: &theme, font_size: zoom_px, line_height: tpl.line_height, cursor_visible: frame.cursor_on },
                 &mut self.zoom_scratch,
             );
             let big = &self.zoom_scratch;
@@ -256,7 +256,7 @@ impl Renderer {
             raster::raster_grid_into(
                 &mut self.raster,
                 snap,
-                &GridStyle { theme: &theme, font_size: base_px, line_height: tpl.line_height },
+                &GridStyle { theme: &theme, font_size: base_px, line_height: tpl.line_height, cursor_visible: frame.cursor_on },
                 &mut self.term_scratch,
             );
             ((0, 0), (base_m.cell_w, base_m.cell_h))
@@ -429,6 +429,7 @@ mod tests {
             camera: Camera::BASE,
             captions: vec![],
             highlights: vec![],
+            cursor_on: true,
         }
     }
 

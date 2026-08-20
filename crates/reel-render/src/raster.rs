@@ -9,6 +9,8 @@ pub struct GridStyle<'a> {
     pub theme: &'a Theme,
     pub font_size: f32,
     pub line_height: f32,
+    /// Draw the cursor (false during a blink's off phase).
+    pub cursor_visible: bool,
 }
 
 /// Renders the full grid at the given font size. The same routine serves the
@@ -49,7 +51,11 @@ pub fn raster_grid_into(r: &mut Rasterizer, snap: &Snapshot, style: &GridStyle, 
     }
 
     // Cursor under the glyph so the char stays readable on top.
-    let cursor_cell_fg = draw_cursor(pix, snap, style, m.cell_w, m.cell_h);
+    let cursor_cell_fg = if style.cursor_visible {
+        draw_cursor(pix, snap, style, m.cell_w, m.cell_h)
+    } else {
+        None
+    };
 
     for row in 0..snap.rows {
         for col in 0..snap.cols {
@@ -292,7 +298,7 @@ mod tests {
         let s = snap(r#"[0.1, "o", "\u001b[31mhello\u001b[0m"]"#, 20, 4);
         let theme = builtin("reel-dark").unwrap();
         let mut r = Rasterizer::new(None).unwrap().0;
-        let pix = raster_grid(&mut r, &s, &GridStyle { theme: &theme, font_size: 17.0, line_height: 1.4 });
+        let pix = raster_grid(&mut r, &s, &GridStyle { theme: &theme, font_size: 17.0, line_height: 1.4, cursor_visible: true });
         assert!(pix.width() > 100 && pix.height() > 40);
         // Some pixel in the first row band should be red-ish (fg Indexed(1)).
         let red = theme.ansi[1];
@@ -307,7 +313,7 @@ mod tests {
         let s = snap(r#"[0.1, "o", "x"]"#, 10, 2);
         let theme = builtin("reel-dark").unwrap();
         let mut r = Rasterizer::new(None).unwrap().0;
-        let pix = raster_grid(&mut r, &s, &GridStyle { theme: &theme, font_size: 16.0, line_height: 1.2 });
+        let pix = raster_grid(&mut r, &s, &GridStyle { theme: &theme, font_size: 16.0, line_height: 1.2, cursor_visible: true });
         let cur = theme.cursor;
         let found = pix.pixels().iter().any(|p| {
             (p.red() as i32 - cur.r as i32).abs() < 12
