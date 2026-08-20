@@ -95,10 +95,12 @@ fn load_with_source(
         }
     }
     // Redactions run before anything renders, and cover .txt dumps too.
+    let mut redactors = Vec::new();
     for pattern in &program.redactions {
         let re = regex_lite::Regex::new(pattern)
             .map_err(|e| anyhow!("redact `{pattern}`: {e}"))?;
         reel_term::redact::apply(&mut snapshots, &re);
+        redactors.push(re);
     }
     if !quiet {
         for (kind, sample) in reel_term::redact::scan_sensitive(&snapshots, 4) {
@@ -109,7 +111,7 @@ fn load_with_source(
     }
 
     let mut visuals = program.visuals;
-    visuals.extend(key_overlay_visuals(&cast, &cast_path, &program.key_windows));
+    visuals.extend(key_overlay_visuals(&cast, &cast_path, &program.key_windows, &redactors));
     let audio_ops = program.audio;
     let markers = program.markers;
     Ok(Loaded { file, cast, snapshots, timeline, visuals, audio_ops, markers, base_dir, cast_path })
@@ -132,11 +134,13 @@ fn cast_markers(cast: &Cast) -> Vec<(String, f64)> {
 }
 
 /// One `VisualOp::Key` per keystroke chip inside a `keys` window, from the
-/// recorded input (sidecar or cast "i" events).
+/// recorded input (sidecar or cast "i" events). Redaction patterns apply to
+/// chip labels too — a typed secret must not resurface in the overlay.
 fn key_overlay_visuals(
     cast: &Cast,
     cast_path: &Path,
     windows: &[(f64, f64)],
+    redactors: &[regex_lite::Regex],
 ) -> Vec<VisualOp> {
     if windows.is_empty() {
         return Vec::new();
@@ -147,9 +151,30 @@ fn key_overlay_visuals(
         .flat_map(|(t, value)| {
             reel_term::keys::chips(&value)
                 .into_iter()
-                .map(move |label| VisualOp::Key { label, at: t })
+                .map(move |label| VisualOp::Key { label: mask_label(label, redactors), at: t })
         })
         .collect()
+}
+
+/// Masks every redaction match inside a chip label with the same `•` the
+/// grid uses.
+fn mask_label(label: String, redactors: &[regex_lite::Regex]) -> String {
+    let mut s = label;
+    for re in redactors {
+        if !re.is_match(&s) {
+            continue;
+        }
+        let mut out = String::with_capacity(s.len());
+        let mut last = 0;
+        for m in re.find_iter(&s) {
+            out.push_str(&s[last..m.start()]);
+            out.extend(std::iter::repeat('•').take(s[m.start()..m.end()].chars().count()));
+            last = m.end();
+        }
+        out.push_str(&s[last..]);
+        s = out;
+    }
+    s
 }
 
 /// Renders each planned frame into the renderer's reused buffer and hands
@@ -994,8 +1019,13 @@ pub fn render_for_watch(
 
     let program = file.resolve_with(cast.duration(), &cast_markers(cast))?;
     let (timeline, _) = Timeline::compile(&program.edits, cast.duration())?;
+    let redactors: Vec<regex_lite::Regex> = program
+        .redactions
+        .iter()
+        .filter_map(|p| regex_lite::Regex::new(p).ok())
+        .collect();
     let mut visuals = program.visuals;
-    visuals.extend(key_overlay_visuals(cast, &cast_path, &program.key_windows));
+    visuals.extend(key_overlay_visuals(cast, &cast_path, &program.key_windows, &redactors));
 
     let (settings, _) = settings_from_config(&file.config)?;
     let fps = settings.fps;
@@ -1079,5 +1109,22 @@ pub fn human_size(bytes: u64) -> String {
         format!("{:.2}MB", bytes as f64 / 1_000_000.0)
     } else {
         format!("{:.1}KB", bytes as f64 / 1_000.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chip_labels_get_redacted() {
+        let res = vec![regex_lite::Regex::new("sk-live-[A-Za-z0-9]+").unwrap()];
+        assert_eq!(
+            mask_label("export KEY=sk-live-a1b2".into(), &res),
+            "export KEY=••••••••••••"
+        );
+        assert_eq!(mask_label("cargo test".into(), &res), "cargo test");
+        // Untruncated masking even when the label was truncated upstream.
+        assert_eq!(mask_label("sk-live-a1".into(), &res), "••••••••••");
     }
 }
