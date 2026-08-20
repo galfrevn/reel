@@ -43,8 +43,11 @@ pub struct RenderSettings {
 /// (CLI flags are applied by the caller before this.)
 pub fn settings_from_config(cfg: &ReelConfig) -> Result<(RenderSettings, Vec<String>), RenderError> {
     let mut warnings = Vec::new();
-    let mut tpl = template::builtin(&cfg.template.name).ok_or_else(|| {
-        RenderError::UnknownTemplate(cfg.template.name.clone(), template::template_names().join(", "))
+    let mut tpl = template::lookup(&cfg.template.name).ok_or_else(|| {
+        let mut names: Vec<String> =
+            template::template_names().iter().map(|s| s.to_string()).collect();
+        names.extend(template::user_template_names());
+        RenderError::UnknownTemplate(cfg.template.name.clone(), names.join(", "))
     })?;
 
     let style = &cfg.style;
@@ -74,7 +77,7 @@ pub fn settings_from_config(cfg: &ReelConfig) -> Result<(RenderSettings, Vec<Str
         }
     }
 
-    let theme_name = style.theme.as_deref().unwrap_or(tpl.theme);
+    let theme_name = style.theme.as_deref().unwrap_or(tpl.theme.as_str());
     let theme = theme::lookup(theme_name).ok_or_else(|| {
         let mut names: Vec<String> =
             theme::theme_names().iter().map(|s| s.to_string()).collect();

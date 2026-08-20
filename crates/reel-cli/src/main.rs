@@ -1,5 +1,6 @@
 mod pipeline;
 mod record;
+mod templates;
 mod themes;
 mod watch;
 
@@ -85,8 +86,13 @@ enum Command {
         #[arg(long, short, default_value = "demo.reel")]
         out: PathBuf,
     },
-    /// List built-in templates
+    /// List available templates (alias for `template list`)
     Templates,
+    /// Manage templates
+    Template {
+        #[command(subcommand)]
+        action: TemplateAction,
+    },
     /// List available themes (alias for `theme list`)
     Themes,
     /// Manage themes
@@ -94,6 +100,16 @@ enum Command {
         #[command(subcommand)]
         action: ThemeAction,
     },
+}
+
+#[derive(Subcommand)]
+enum TemplateAction {
+    /// List built-in and installed templates
+    List,
+    /// Print a template as TOML (a starting point for your own)
+    Show { name: String },
+    /// Install templates from a .toml file or a GitHub repo (owner/repo[/name])
+    Add { source: String },
 }
 
 #[derive(Subcommand)]
@@ -135,13 +151,12 @@ fn run() -> Result<()> {
         Command::Shot { file, at, out, template } => pipeline::shot(&file, &at, out, template),
         Command::Inspect { file } => pipeline::inspect(&file),
         Command::Init { template, out } => init(&template, &out),
-        Command::Templates => {
-            for name in reel_render::template::template_names() {
-                let t = reel_render::template::builtin(name).unwrap();
-                println!("{name:<10} {}", t.description);
-            }
+        Command::Templates | Command::Template { action: TemplateAction::List } => {
+            templates::list();
             Ok(())
         }
+        Command::Template { action: TemplateAction::Show { name } } => templates::show(&name),
+        Command::Template { action: TemplateAction::Add { source } } => templates::add(&source),
         Command::Themes | Command::Theme { action: ThemeAction::List } => {
             list_themes();
             Ok(())
@@ -153,9 +168,9 @@ fn run() -> Result<()> {
 }
 
 fn init(template: &str, out: &PathBuf) -> Result<()> {
-    if reel_render::template::builtin(template).is_none() {
+    if reel_render::template::lookup(template).is_none() {
         bail!(
-            "unknown template `{template}` (built-ins: {})",
+            "unknown template `{template}` (available: {})",
             reel_render::template::template_names().join(", ")
         );
     }
@@ -165,7 +180,7 @@ fn init(template: &str, out: &PathBuf) -> Result<()> {
     let content = format!(
         r#"---
 [source]
-cast = "session.cast"          # record with: asciinema rec session.cast -- your-tui
+cast = "session.cast"          # record with: reel record -- your-tui
 
 [template]
 name = "{template}"
