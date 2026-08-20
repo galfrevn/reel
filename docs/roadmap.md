@@ -49,12 +49,11 @@ the seed pack in `templates/`, `registry/index.json`, the canonical demo
 cast (`crates/reel-cli/assets/demo.cast`, embedded), and the
 `reel template search` / `try` commands. The registry stays federated —
 GitHub is the storage, a static site is the storefront, nothing to run.
-Every preview renders the same demo cast, so looks stay comparable. Next:
+Every preview renders the same demo cast, so looks stay comparable. The
+static gallery shipped too: `.github/workflows/gallery.yml` runs
+`registry/build_gallery.py` on every registry change and publishes the grid
+of animated previews to GitHub Pages. Next:
 
-- **Static gallery** — a GitHub Action renders every registry template
-  against the canonical cast on merge and publishes a GitHub Pages grid of
-  animated previews, each with its `reel template add …` install line.
-  First real consumer of the composite render Action below.
 - **`reel template publish`** — validates the TOML, renders the preview
   locally, and scaffolds the pack repo / opens the index PR via `gh`.
 

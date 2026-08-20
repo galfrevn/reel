@@ -82,10 +82,12 @@ freeze  last 1.5s
 - **Templates that look designed** — `glass`, `minimal`, `classic`, `geist`,
   `paper`, `crt`; bring your own as TOML or install packs from GitHub.
   Themes import from base16, Alacritty, and iTerm2.
-- **A community registry** — `reel template search` finds looks published by
-  others, `reel template try owner/repo/name` previews one against a bundled
-  demo recording before installing anything. Publishing is a
-  [PR with a TOML file](registry/README.md) — no accounts, no infrastructure.
+- **A community registry** — [browse every template as a live
+  preview](https://galfrevn.github.io/reel/), `reel template search` finds
+  looks published by others, `reel template try owner/repo/name` previews one
+  against a bundled demo recording before installing anything. Publishing is
+  a [PR with a TOML file](registry/README.md) — no accounts, no
+  infrastructure.
 - **Size budgets** — `budget = "800kb"` and the encoder walks a predictable
   degradation ladder, reporting every step.
 - **Sound without audio files** — keystrokes, UI cues, and agent-thinking

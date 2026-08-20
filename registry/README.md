@@ -1,7 +1,8 @@
 # reel template registry
 
-The community template index behind `reel template search`. Deliberately
-just files in a repo — no hosted infrastructure, nothing to run.
+The community template index behind `reel template search` and the
+[template gallery](https://galfrevn.github.io/reel/). Deliberately just
+files in a repo — no hosted infrastructure, nothing to run.
 
 ## How it works
 
@@ -21,8 +22,12 @@ just files in a repo — no hosted infrastructure, nothing to run.
    root of a public GitHub repo. Start from any builtin:
    `reel template show glass > templates/my-look.toml`. Declare `schema = 1`.
 2. Check it locally: `reel template try templates/my-look.toml`.
-3. Open a PR against this file adding your pack entry: repo, a one-line
+3. Open a PR against `index.json` adding your pack entry: repo, a one-line
    description, and one entry per template (name, description, tags).
+
+On merge, the `gallery` workflow re-renders every template against the
+canonical demo cast (`build_gallery.py`) and republishes the gallery — your
+pack shows up with live previews and its install command, automatically.
 
 Templates are declarative TOML — installing one can't execute anything.
 Packs must not bundle font files (licensing); reference fonts by family
