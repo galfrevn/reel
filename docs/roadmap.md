@@ -52,10 +52,13 @@ GitHub is the storage, a static site is the storefront, nothing to run.
 Every preview renders the same demo cast, so looks stay comparable. The
 static gallery shipped too: `.github/workflows/gallery.yml` runs
 `registry/build_gallery.py` on every registry change and publishes the grid
-of animated previews to GitHub Pages. Next:
-
-- **`reel template publish`** — validates the TOML, renders the preview
-  locally, and scaffolds the pack repo / opens the index PR via `gh`.
+of animated previews to GitHub Pages. And `reel template publish` closes the
+loop: validate → local preview → scaffold the pack's `templates/` dir →
+update the index (in place when run from this repo, via a `gh`-driven
+fork/branch/PR otherwise, with a printed manual route when `gh` is absent).
+The registry feature set is complete; what remains is operational — merge to
+main, enable Pages (Settings → Pages → Source: GitHub Actions), and grow the
+index.
 
 Constraints kept on purpose: templates stay declarative TOML (installing a
 stranger's template can't execute anything), and packs never bundle fonts

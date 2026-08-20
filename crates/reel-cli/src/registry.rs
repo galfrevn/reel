@@ -13,6 +13,10 @@ use serde::Deserialize;
 /// skipped with a note rather than failing the whole search.
 const INDEX_SCHEMA: u32 = 1;
 
+/// The GitHub repo holding `registry/index.json` — where `publish` sends PRs.
+pub const REGISTRY_REPO: &str = "galfrevn/reel";
+pub const INDEX_PATH: &str = "registry/index.json";
+
 const DEFAULT_INDEX_URL: &str =
     "https://raw.githubusercontent.com/galfrevn/reel/main/registry/index.json";
 
@@ -104,6 +108,45 @@ pub fn search(query: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Inserts (or replaces) one template entry in a raw index document. The
+/// pack is matched by repo, created if absent; an entry with the same name
+/// is replaced so re-publishing updates in place. Returns the new document
+/// pretty-printed, ready to commit.
+pub fn upsert_entry(
+    index_text: &str,
+    repo: &str,
+    pack_description: &str,
+    entry: serde_json::Value,
+) -> Result<String> {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(index_text).context("parsing registry index")?;
+    let packs = doc
+        .get_mut("packs")
+        .and_then(|p| p.as_array_mut())
+        .ok_or_else(|| anyhow::anyhow!("index has no `packs` array"))?;
+
+    let pack = match packs.iter_mut().find(|p| p["repo"] == repo) {
+        Some(p) => p,
+        None => {
+            packs.push(serde_json::json!({
+                "repo": repo,
+                "description": pack_description,
+                "templates": [],
+            }));
+            packs.last_mut().expect("just pushed")
+        }
+    };
+    let templates = pack
+        .get_mut("templates")
+        .and_then(|t| t.as_array_mut())
+        .ok_or_else(|| anyhow::anyhow!("pack `{repo}` has no `templates` array"))?;
+    match templates.iter_mut().find(|t| t["name"] == entry["name"]) {
+        Some(existing) => *existing = entry,
+        None => templates.push(entry),
+    }
+    Ok(format!("{}\n", serde_json::to_string_pretty(&doc)?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,5 +160,23 @@ mod tests {
         let newer: Index =
             serde_json::from_str(r#"{"schema": 99, "packs": []}"#).unwrap();
         assert!(newer.schema > INDEX_SCHEMA);
+    }
+
+    #[test]
+    fn upsert_creates_pack_appends_and_replaces() {
+        let base = r#"{"schema": 1, "packs": []}"#;
+        let entry = serde_json::json!({"name": "neon", "description": "v1", "tags": ["dark"]});
+        let one = upsert_entry(base, "me/looks", "my pack", entry).unwrap();
+        assert!(one.contains("me/looks") && one.contains("v1"));
+
+        // Same name in the same pack replaces; a second name appends.
+        let entry2 = serde_json::json!({"name": "neon", "description": "v2", "tags": []});
+        let two = upsert_entry(&one, "me/looks", "my pack", entry2).unwrap();
+        assert!(two.contains("v2") && !two.contains("v1"));
+        let entry3 = serde_json::json!({"name": "other", "description": "", "tags": []});
+        let three = upsert_entry(&two, "me/looks", "my pack", entry3).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&three).unwrap();
+        assert_eq!(doc["packs"][0]["templates"].as_array().unwrap().len(), 2);
+        assert_eq!(doc["packs"].as_array().unwrap().len(), 1);
     }
 }

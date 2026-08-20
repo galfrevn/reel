@@ -1,5 +1,6 @@
 mod net;
 mod pipeline;
+mod publish;
 mod record;
 mod registry;
 mod script;
@@ -155,6 +156,21 @@ enum TemplateAction {
         /// A template name, a local .toml file, or owner/repo/name on GitHub
         source: String,
     },
+    /// Publish a template to the community registry (validate → preview →
+    /// scaffold → PR via gh)
+    Publish {
+        /// The template .toml to publish
+        file: PathBuf,
+        /// Tags shown in search and the gallery (repeatable)
+        #[arg(long)]
+        tag: Vec<String>,
+        /// Stop after scaffolding; print the index entry instead of a PR
+        #[arg(long)]
+        no_pr: bool,
+        /// Skip rendering the local preview
+        #[arg(long)]
+        no_preview: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -231,6 +247,9 @@ fn run() -> Result<()> {
         }
         Command::Template { action: TemplateAction::Try { source } } => {
             templates::try_template(&source)
+        }
+        Command::Template { action: TemplateAction::Publish { file, tag, no_pr, no_preview } } => {
+            publish::publish(&file, &tag, no_pr, no_preview)
         }
         Command::Themes | Command::Theme { action: ThemeAction::List } => {
             list_themes();

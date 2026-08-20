@@ -120,6 +120,7 @@ reel template add mine.toml             # register your edit
 reel template search neon               # find community templates
 reel template try owner/repo/name       # preview one without installing
 reel template add owner/repo            # install a pack from GitHub
+reel template publish mine.toml --tag dark  # validate → preview → registry PR
 reel theme import my-colors.itermcolors # base16 YAML, Alacritty, iTerm2
 ```
 

@@ -112,18 +112,31 @@ const DEMO_CAST: &str = include_str!("../assets/demo.cast");
 /// cast without installing anything. `source` is a template name, a local
 /// .toml, or `owner/repo/name` on GitHub (downloaded to a temp file).
 pub fn try_template(source: &str) -> Result<()> {
+    let dir = preview_dir()?;
+    let (template, label) = resolve_try_source(source, &dir)?;
+    let out = render_demo_preview(&template, &label)?;
+    println!("previewing `{label}` → {}", out.display());
+    open_preview(&out);
+    Ok(())
+}
+
+fn preview_dir() -> Result<PathBuf> {
     let dir = std::env::temp_dir().join("reel-try");
     std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
 
-    let (template, label) = resolve_try_source(source, &dir)?;
+/// Renders the embedded demo cast with a template (name or .toml path) into
+/// the preview dir. Shared by `try` and `publish`.
+pub fn render_demo_preview(template_ref: &str, label: &str) -> Result<PathBuf> {
+    let dir = preview_dir()?;
     let cast = dir.join("demo.cast");
     std::fs::write(&cast, DEMO_CAST)?;
-
     let out = dir.join(format!("{label}.webm"));
     crate::pipeline::render(
         &cast,
         Some(out.clone()),
-        Some(template),
+        Some(template_ref.to_string()),
         None,
         None,
         None,
@@ -131,9 +144,7 @@ pub fn try_template(source: &str) -> Result<()> {
         false,
         false,
     )?;
-    println!("previewing `{label}` → {}", out.display());
-    open_preview(&out);
-    Ok(())
+    Ok(out)
 }
 
 /// Turns a try source into something `template::lookup` resolves (a name or
@@ -173,7 +184,7 @@ fn resolve_try_source(source: &str, dir: &Path) -> Result<(String, String)> {
 }
 
 /// Best-effort: pop the rendered preview open in the platform viewer.
-fn open_preview(path: &PathBuf) {
+pub fn open_preview(path: &PathBuf) {
     #[cfg(target_os = "macos")]
     let opener = "open";
     #[cfg(all(unix, not(target_os = "macos")))]

@@ -3,22 +3,34 @@
   "packs": [
     {
       "repo": "galfrevn/reel",
-      "description": "Official starter pack — ships with the reel repo",
+      "description": "Official starter pack \u2014 ships with the reel repo",
       "templates": [
         {
           "name": "synthwave",
           "description": "Neon gradient, soft glow, retro without the scanline grit",
-          "tags": ["dark", "gradient", "glow"]
+          "tags": [
+            "dark",
+            "gradient",
+            "glow"
+          ]
         },
         {
           "name": "slate",
-          "description": "Muted dark slate with dot titlebar — docs-site sober",
-          "tags": ["dark", "minimal", "docs"]
+          "description": "Muted dark slate with dot titlebar \u2014 docs-site sober",
+          "tags": [
+            "dark",
+            "minimal",
+            "docs"
+          ]
         },
         {
           "name": "latte",
-          "description": "Warm light mode with macOS chrome — READMEs that feel friendly",
-          "tags": ["light", "macos", "warm"]
+          "description": "Warm light mode with macOS chrome \u2014 READMEs that feel friendly",
+          "tags": [
+            "light",
+            "macos",
+            "warm"
+          ]
         }
       ]
     }
