@@ -3,10 +3,11 @@
 //! 256 colors (terminal themes almost always do), delta rectangles, and a
 //! quantizer fallback for gradient-heavy content.
 
-mod opus;
 pub mod webm;
 mod yuv;
 
+#[cfg(feature = "video")]
+mod opus;
 #[cfg(feature = "video")]
 mod vp9;
 
@@ -236,6 +237,38 @@ pub fn encode_webm(
     _opts: &WebmOptions,
 ) -> Result<WebmReport, EncodeError> {
     Err(EncodeError::VideoDisabled)
+}
+
+#[cfg(not(feature = "video"))]
+pub struct WebmEncoder {}
+
+#[cfg(not(feature = "video"))]
+impl WebmEncoder {
+    pub fn new(_width: u32, _height: u32, _opts: &WebmOptions) -> Result<Self, EncodeError> {
+        Err(EncodeError::VideoDisabled)
+    }
+
+    pub fn push(
+        &mut self,
+        _rgba: &[u8],
+        _width: u32,
+        _height: u32,
+        _dur_s: f64,
+    ) -> Result<(), EncodeError> {
+        Err(EncodeError::VideoDisabled)
+    }
+
+    pub fn finish(self, _audio: Option<&[f32]>) -> Result<WebmReport, EncodeError> {
+        Err(EncodeError::VideoDisabled)
+    }
+
+    pub fn finish_with_cues(
+        self,
+        _audio: Option<&[f32]>,
+        _cues: &[webm::Cue],
+    ) -> Result<WebmReport, EncodeError> {
+        Err(EncodeError::VideoDisabled)
+    }
 }
 
 /// One output frame: straight (non-premultiplied) RGBA and a display duration.
