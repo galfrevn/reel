@@ -264,7 +264,7 @@ tone is synthesized from recipes, no audio files exist anywhere:
 file = "demo.webm"
 
 [audio]
-keyboard = "mx-brown"    # or mx-blue, topre, laptop, typewriter, none
+keyboard = "mx-brown"    # or mx-red, mx-blue, topre, laptop, typewriter, buckling-spring, none
 ```
 
 Keystroke sounds come from the recording's input events (or are inferred

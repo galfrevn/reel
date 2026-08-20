@@ -152,7 +152,8 @@ from recipes — no audio files exist anywhere, output is byte-identical
 everywhere:
 
 - **Keyboard** — per-keystroke press/release from the recorded input, with
-  profiles: `mx-brown`, `mx-blue`, `topre`, `laptop`, `typewriter`, `none`.
+  profiles: `mx-brown`, `mx-red`, `mx-blue`, `topre`, `laptop`,
+  `typewriter`, `buckling-spring`, `none`.
 - **UI cues** — the grid diff knows when the screen answers; a subtle pop,
   zero configuration.
 - **Thinking bed** — long idle stretches get a low pulse resolving to a

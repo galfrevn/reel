@@ -199,6 +199,23 @@
             "error",
             "minimal"
           ]
+        },
+        {
+          "name": "mouse-click",
+          "description": "A crisp two-part button click — cursor actions, selections",
+          "tags": [
+            "ui",
+            "click"
+          ]
+        },
+        {
+          "name": "snap",
+          "description": "A dry finger snap — attention, beat marks, section changes",
+          "tags": [
+            "ui",
+            "click",
+            "percussive"
+          ]
         }
       ]
     }
