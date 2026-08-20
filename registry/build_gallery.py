@@ -36,6 +36,7 @@ SITE = pathlib.Path(__file__).resolve().parent / "site"
 DEMO_CAST = REPO_ROOT / "crates" / "reel-cli" / "assets" / "demo.cast"
 INDEX = REPO_ROOT / "registry" / "index.json"
 LOGO = REPO_ROOT / "documentation" / "assets" / "logo.svg"
+OG_IMAGE = REPO_ROOT / "documentation" / "assets" / "og.png"
 POSTER_AT = "9.6s"  # the diff-stat moment: prompt, colors, and output all visible
 
 
@@ -295,6 +296,7 @@ def main():
         shutil.copy(SITE / asset, out / asset)
     shutil.copytree(SITE / "fonts", out / "fonts", dirs_exist_ok=True)
     shutil.copy(LOGO, out / "logo.svg")
+    shutil.copy(OG_IMAGE, out / "og.png")
 
     print(f"gallery → {out / 'index.html'}")
 
