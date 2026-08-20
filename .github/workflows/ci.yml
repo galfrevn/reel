@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install libvpx (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libvpx-dev libclang-dev
+      - name: Install libvpx (macOS)
+        run: brew install libvpx
+        if: runner.os == 'macOS'
+
+      - name: Clippy (new warnings only, non-blocking baseline)
+        run: cargo clippy --workspace --all-targets
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Test without video feature (pure Rust)
+        run: cargo test -p reel-cli --no-default-features
+
+  # Best-effort: reel is untested on Windows, but the pure-Rust build
+  # (everything except .webm) should compile against ConPTY via portable-pty.
+  windows:
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (no video)
+        run: cargo build -p reel-cli --no-default-features
+      - name: Unit tests (no video)
+        run: cargo test -p reel-cli -p reel-audio -p reel-cast -p reel-timeline -p reel-format --no-default-features

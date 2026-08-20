@@ -10,6 +10,12 @@ repository.workspace = true
 name = "reel"
 path = "src/main.rs"
 
+[features]
+default = ["video"]
+# .webm output (VP9 via libvpx). Disable for a pure-Rust build — everything
+# but video keeps working, and .webm renders explain what's missing.
+video = ["reel-encode/video"]
+
 [dependencies]
 reel-cast = { workspace = true }
 reel-term = { workspace = true }
