@@ -82,6 +82,21 @@ fn load(path: &Path, template_override: Option<String>, quiet: bool) -> Result<L
     Ok(Loaded { file, cast, snapshots, timeline, visuals, audio_ops, base_dir, cast_path })
 }
 
+/// Renders each planned frame into the renderer's reused buffer and hands
+/// the encoder a borrowed slice — flat memory, zero per-frame allocations.
+fn render_each(
+    renderer: &mut Renderer,
+    plans: &[reel_render::FramePlan],
+    snapshots: &[Snapshot],
+    mut sink: impl FnMut(&[u8], u32, u32, f64) -> Result<()>,
+) -> Result<()> {
+    for f in plans {
+        let (w, h, rgba) = renderer.render_frame_rgba(&snapshots[f.snapshot], f);
+        sink(rgba, w, h, f.dur)?;
+    }
+    Ok(())
+}
+
 fn uniform_dims(snaps: &[Snapshot]) -> bool {
     snaps.windows(2).all(|w| w[0].cols == w[1].cols && w[0].rows == w[1].rows)
 }
@@ -318,6 +333,9 @@ fn grid_changes(snaps: &[Snapshot]) -> Vec<reel_audio::GridChange> {
 
 /// WebM budget ladder: walk the CQ level (and then fps/scale) down until the
 /// file fits, reporting each step like the GIF path does.
+///
+/// Frames stream straight from the renderer into the encoder — nothing
+/// holds the whole video in RAM (a 1080p render used to peak at ~3GB).
 fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -> Result<()> {
     let budget_bytes = match &cfg.output.budget {
         Some(b) => Some(
@@ -346,7 +364,7 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
         ("cq → 55, fps → 15".into(), 55, 15, 1),
     ];
 
-    let mut frames: Option<(u32, u32, Vec<RgbaFrame>)> = None;
+    let mut renderer: Option<Renderer> = None;
     for (i, (label, cq, fps, scale)) in ladder.iter().enumerate() {
         if budget_bytes.is_none() && i > 0 {
             break;
@@ -354,20 +372,42 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
         let mut step_cfg = cfg.clone();
         step_cfg.output.fps = Some(*fps);
         step_cfg.output.scale = *scale;
-        if frames.as_ref().map(|(f, s, _)| (*f, *s)) != Some((*fps, *scale)) {
-            let (rendered, warns) = render_frames(loaded, &step_cfg, quiet || i > 0)?;
-            if i == 0 {
-                print_warnings(&warns, quiet);
+        let (settings, warns) = settings_from_config(&step_cfg)?;
+        let fps_used = settings.fps;
+        // One renderer across rungs keeps the glyph cache warm.
+        let font_warns = match renderer.as_mut() {
+            Some(r) => r.set_settings(settings)?,
+            None => {
+                let (r, w) = Renderer::new(settings)?;
+                renderer = Some(r);
+                w
             }
-            frames = Some((*fps, *scale, rendered));
+        };
+        if i == 0 {
+            print_warnings(&warns, quiet);
+            print_warnings(&font_warns, quiet);
         }
-        let (_, _, ref rendered) = frames.as_ref().unwrap();
+        let r = renderer.as_mut().unwrap();
+        let plans = plan(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps_used);
+        if i == 0 && !quiet {
+            eprintln!(
+                "rendering {} frames ({:.1}s output from {:.1}s recording)…",
+                plans.len(),
+                loaded.timeline.out_duration(),
+                loaded.cast.duration()
+            );
+        }
 
-        let report = reel_encode::encode_webm(
-            rendered,
-            audio.as_deref(),
+        let (cw, ch) = r.canvas_size(loaded.cast.cols(), loaded.cast.rows());
+        let mut encoder = reel_encode::WebmEncoder::new(
+            cw,
+            ch,
             &WebmOptions { cq_level: *cq, cfr_fps: Some(*fps), ..Default::default() },
         )?;
+        render_each(r, &plans, &loaded.snapshots, |rgba, w, h, dur| {
+            encoder.push(rgba, w, h, dur).map_err(Into::into)
+        })?;
+        let report = encoder.finish(audio.as_deref())?;
         let size = report.bytes.len() as u64;
         let fits = budget_bytes.map(|b| size <= b).unwrap_or(true);
         if fits || i == ladder.len() - 1 {
@@ -447,7 +487,11 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
         ("fps → 10, palette → 64".into(), 10, 1, 64),
     ];
 
-    let mut last_err = None;
+    // Two streaming passes per rung (palette scan, then write): twice the
+    // render work of keeping every frame, but flat memory — a 1080p render
+    // used to hold gigabytes of RGBA. The shared renderer keeps the glyph
+    // cache warm, so the second pass is much cheaper than the first.
+    let mut renderer: Option<Renderer> = None;
     let mut prev: Option<(u32, u32)> = None;
     for (i, (label, fps, scale, colors)) in ladder.iter().enumerate() {
         if budget_bytes.is_none() && i > 0 {
@@ -462,21 +506,58 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
         let mut step_cfg = cfg.clone();
         step_cfg.output.fps = Some(*fps);
         step_cfg.output.scale = *scale;
-        let (frames, warns) = render_frames(loaded, &step_cfg, quiet || i > 0)?;
+        let (settings, warns) = settings_from_config(&step_cfg)?;
+        let fps_used = settings.fps;
+        let font_warns = match renderer.as_mut() {
+            Some(r) => r.set_settings(settings)?,
+            None => {
+                let (r, w) = Renderer::new(settings)?;
+                renderer = Some(r);
+                w
+            }
+        };
         if i == 0 {
             print_warnings(&warns, quiet);
+            print_warnings(&font_warns, quiet);
         }
-        let report = reel_encode::encode_gif(
-            &frames,
-            &GifOptions { looping: step_cfg.output.looping, max_colors: *colors },
-        )?;
-        let size = report.bytes.len() as u64;
+        let r = renderer.as_mut().unwrap();
+        let plans = plan(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps_used);
+        if i == 0 && !quiet {
+            eprintln!(
+                "rendering {} frames ({:.1}s output from {:.1}s recording)…",
+                plans.len(),
+                loaded.timeline.out_duration(),
+                loaded.cast.duration()
+            );
+        }
+
+        let mut builder = reel_encode::GifPaletteBuilder::new(*colors);
+        render_each(r, &plans, &loaded.snapshots, |rgba, _, _, _| {
+            builder.feed(rgba);
+            Ok(())
+        })?;
+        let (cw, ch) = r.canvas_size(loaded.cast.cols(), loaded.cast.rows());
+        let mut bytes = Vec::new();
+        let (frames_written, palette) = {
+            let mut stream = reel_encode::GifStream::new(
+                &mut bytes,
+                cw,
+                ch,
+                builder.finish(),
+                step_cfg.output.looping,
+            )?;
+            render_each(r, &plans, &loaded.snapshots, |rgba, _, _, dur| {
+                stream.push(rgba, dur).map_err(Into::into)
+            })?;
+            stream.finish()?
+        };
+        let size = bytes.len() as u64;
 
         let fits = budget_bytes.map(|b| size <= b).unwrap_or(true);
         if fits || i == ladder.len() - 1 {
-            std::fs::write(out_path, &report.bytes)?;
+            std::fs::write(out_path, &bytes)?;
             if !quiet {
-                let palette = match report.palette {
+                let palette = match palette {
                     PaletteMode::Exact(n) => format!("exact {n}-color palette (lossless)"),
                     PaletteMode::Quantized(n) => format!("quantized to {n} colors"),
                 };
@@ -484,7 +565,7 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
                     "{}: {} — {} frames, {}, fps cap {}, scale {}{}",
                     out_path.display(),
                     human_size(size),
-                    report.frames,
+                    frames_written,
                     palette,
                     fps,
                     scale,
@@ -510,9 +591,8 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
                 ladder[i + 1].0
             );
         }
-        last_err = Some(anyhow!("budget not reachable"));
     }
-    Err(last_err.unwrap_or_else(|| anyhow!("no ladder step produced output")))
+    Err(anyhow!("no ladder step produced output"))
 }
 
 pub fn shot(path: &Path, at: &str, out: Option<PathBuf>, template: Option<String>) -> Result<()> {

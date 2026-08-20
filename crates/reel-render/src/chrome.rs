@@ -145,8 +145,26 @@ pub fn compose_over(
     s: f32,
     aspect: Option<f32>,
 ) -> Pixmap {
+    let mut canvas = Pixmap::new(1, 1).expect("pixmap");
+    compose_over_into(base, tpl, term, s, aspect, &mut canvas);
+    canvas
+}
+
+/// Like [`compose_over`], but reuses `canvas` (copying the cached base into
+/// it) instead of cloning a fresh pixmap per frame.
+pub fn compose_over_into(
+    base: &Pixmap,
+    tpl: &Template,
+    term: &Pixmap,
+    s: f32,
+    aspect: Option<f32>,
+    canvas: &mut Pixmap,
+) {
     let l = layout(tpl, term.width(), term.height(), s, aspect);
-    let mut canvas = base.clone();
+    if canvas.width() != base.width() || canvas.height() != base.height() {
+        *canvas = Pixmap::new(base.width(), base.height()).expect("canvas pixmap");
+    }
+    canvas.data_mut().copy_from_slice(base.data());
     canvas.draw_pixmap(
         l.term_x.round() as i32,
         l.term_y.round() as i32,
@@ -155,7 +173,6 @@ pub fn compose_over(
         Transform::identity(),
         None,
     );
-    canvas
 }
 
 /// One-shot compose (tests, single frames).

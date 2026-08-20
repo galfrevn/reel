@@ -9,17 +9,17 @@ all need demo recordings for READMEs, launch posts, and docs — and most of
 them ship bad ones: 10MB GIFs, unreadable fonts on mobile, 40 seconds of dead
 air while an LLM thinks, zero visual polish.
 
-The incumbent, [VHS](https://github.com/charmbracelet/vhs), is a *session
-generator*: you script a session in a `.tape` file and it executes it. That
-works for simple, deterministic CLIs and breaks down for the modern case:
+The tools that exist today are *session generators*: you script a session
+and they execute it, re-recording from scratch on every change. That works
+for simple, deterministic CLIs and breaks down for the modern case:
 
 - Agentic TUIs are non-deterministic, keyboard-driven, and long-running —
   they can't be meaningfully scripted.
 - Every style change re-executes the session from scratch. For an AI agent
   demo that means paying for new LLM calls to try a different theme.
-- It renders by screen-capturing a headless browser, so it can't do
-  pixel-level post-production (zoom, shaders, compositing).
-- It needs `ttyd` and `ffmpeg` on `PATH` — recurring install friction.
+- Rendering via screen capture of a headless browser rules out pixel-level
+  post-production (zoom, shaders, compositing).
+- They lean on external binaries on `PATH` — recurring install friction.
 
 ## The thesis
 
@@ -61,15 +61,16 @@ session.cast ──▶ VT emulation ──▶ grid snapshots ──▶ timeline 
 
 ## Honest positioning
 
-On raw, unedited playback reel is at **parity** with
-[agg](https://github.com/asciinema/agg) (asciinema's GIF renderer) — both
-emit frames on change and write delta rectangles, so there is no
-order-of-magnitude encoding win to claim, and we don't claim one.
+On raw, unedited playback reel is at **parity** with the established
+cast-to-GIF renderers — like them, it emits frames on change and writes
+delta rectangles, so there is no order-of-magnitude encoding win to claim,
+and we don't claim one.
 
 The value is upstream of the encoder: *editing* shrinks output more than any
 codec tuning can. Cutting dead air and speed-ramping idle stretches removes
 frames entirely — no amount of encoding cleverness competes with not emitting
-4/5 of the frames. agg has no timeline ops; that's the gap.
+4/5 of the frames. Raw playback is the only mode anyone else offers; the
+timeline is the gap.
 
 ## What reel is explicitly NOT
 

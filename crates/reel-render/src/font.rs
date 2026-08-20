@@ -89,10 +89,12 @@ pub struct FontSet {
     primary: [FaceSlot; 4],
     /// char → face that has it, discovered lazily; None = tofu everywhere.
     char_slots: HashMap<char, Option<FaceSlot>>,
-    /// fontdb faces already loaded (or rejected), so scans don't repeat work.
+    /// fontdb faces already loaded (or that failed to load), so repeated
+    /// loads don't repeat work. Only *matching* faces are ever retained —
+    /// candidate files are parsed temporarily and dropped, because keeping
+    /// every visited font (PingFang ~90MB, Apple Color Emoji ~180MB…) used
+    /// to balloon renders by gigabytes.
     scanned: HashMap<fontdb::ID, Option<FaceSlot>>,
-    /// How many db faces the lazy scan has visited so far.
-    scan_pos: usize,
     /// Scan order: symbol-ish and monospace faces first.
     scan_order: Vec<fontdb::ID>,
 }
@@ -117,7 +119,6 @@ impl FontSet {
             primary: [0; 4],
             char_slots: HashMap::new(),
             scanned: HashMap::new(),
-            scan_pos: 0,
             scan_order: Vec::new(),
         };
 
@@ -277,10 +278,26 @@ impl FontSet {
                 return Some((slot, id));
             }
         }
-        // Walk the remaining installed faces until someone claims the char.
-        while self.scan_pos < self.scan_order.len() {
-            let face_id = self.scan_order[self.scan_pos];
-            self.scan_pos += 1;
+        // Walk the installed faces until someone claims the char. Candidates
+        // are parsed *temporarily*; only the match gets loaded for good.
+        // Unique missing chars are few and the ranking puts symbol/braille/
+        // emoji families first, so these scans stay short in practice.
+        for i in 0..self.scan_order.len() {
+            let face_id = self.scan_order[i];
+            if self.scanned.contains_key(&face_id) {
+                continue; // already resident (or known unreadable)
+            }
+            let has_char = self
+                .db
+                .with_face_data(face_id, |data, index| {
+                    FontRef::from_index(data, index as usize)
+                        .map(|f| f.charmap().map(ch) != 0)
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+            if !has_char {
+                continue;
+            }
             let Some(slot) = self.load_face(face_id) else { continue };
             let id = self.font(slot).charmap().map(ch);
             if id != 0 {

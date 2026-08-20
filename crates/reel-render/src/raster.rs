@@ -15,12 +15,22 @@ pub struct GridStyle<'a> {
 /// base view and the zoom view (at a larger size), so zoomed text is
 /// re-rasterized, never upscaled.
 pub fn raster_grid(r: &mut Rasterizer, snap: &Snapshot, style: &GridStyle) -> Pixmap {
-    let m = r.fonts.cell_metrics(style.font_size, style.line_height);
-    let w = (snap.cols as f32 * m.cell_w).ceil() as u32;
-    let h = (snap.rows as f32 * m.cell_h).ceil() as u32;
-    let mut pix = Pixmap::new(w.max(1), h.max(1)).expect("grid pixmap");
+    let mut pix = Pixmap::new(1, 1).expect("pixmap");
+    raster_grid_into(r, snap, style, &mut pix);
+    pix
+}
 
-    fill(&mut pix, style.theme.bg);
+/// Like [`raster_grid`], but reuses `pix` when the size already matches —
+/// per-frame buffer churn is what used to balloon renders to gigabytes.
+pub fn raster_grid_into(r: &mut Rasterizer, snap: &Snapshot, style: &GridStyle, pix: &mut Pixmap) {
+    let m = r.fonts.cell_metrics(style.font_size, style.line_height);
+    let w = ((snap.cols as f32 * m.cell_w).ceil() as u32).max(1);
+    let h = ((snap.rows as f32 * m.cell_h).ceil() as u32).max(1);
+    if pix.width() != w || pix.height() != h {
+        *pix = Pixmap::new(w, h).expect("grid pixmap");
+    }
+
+    fill(pix, style.theme.bg);
 
     let ov = &snap.palette_overrides;
     // Backgrounds first (a glyph may overhang its cell).
@@ -33,13 +43,13 @@ pub fn raster_grid(r: &mut Rasterizer, snap: &Snapshot, style: &GridStyle) -> Pi
                 let x1 = ((col + 1) as f32 * m.cell_w).round() as i32;
                 let y0 = (row as f32 * m.cell_h).round() as i32;
                 let y1 = ((row + 1) as f32 * m.cell_h).round() as i32;
-                fill_rect(&mut pix, x0, y0, x1 - x0, y1 - y0, bg);
+                fill_rect(pix, x0, y0, x1 - x0, y1 - y0, bg);
             }
         }
     }
 
     // Cursor under the glyph so the char stays readable on top.
-    let cursor_cell_fg = draw_cursor(&mut pix, snap, style, m.cell_w, m.cell_h);
+    let cursor_cell_fg = draw_cursor(pix, snap, style, m.cell_w, m.cell_h);
 
     for row in 0..snap.rows {
         for col in 0..snap.cols {
@@ -71,10 +81,10 @@ pub fn raster_grid(r: &mut Rasterizer, snap: &Snapshot, style: &GridStyle) -> Pi
                 let gy = y.round() as i32 + m.baseline as i32 - g.top;
                 match &g.pixels {
                     GlyphPixels::Mask(mask) => {
-                        blit_mask(&mut pix, gx, gy, g.width, g.height, mask, fg)
+                        blit_mask(pix, gx, gy, g.width, g.height, mask, fg)
                     }
                     GlyphPixels::Color(rgba) => {
-                        blit_rgba(&mut pix, gx, gy, g.width, g.height, rgba)
+                        blit_rgba(pix, gx, gy, g.width, g.height, rgba)
                     }
                 }
             }
@@ -83,18 +93,16 @@ pub fn raster_grid(r: &mut Rasterizer, snap: &Snapshot, style: &GridStyle) -> Pi
             if cell.attrs.contains(CellAttrs::UNDERLINE) {
                 let ly = (y + m.baseline + (style.font_size * 0.11).max(1.5)).round() as i32;
                 let lh = (style.font_size / 14.0).max(1.0).round() as i32;
-                fill_rect(&mut pix, x.round() as i32, ly, span_w.round() as i32, lh, fg);
+                fill_rect(pix, x.round() as i32, ly, span_w.round() as i32, lh, fg);
             }
             if cell.attrs.contains(CellAttrs::STRIKEOUT) {
                 let ly = (y + m.baseline - style.font_size * 0.3).round() as i32;
                 let lh = (style.font_size / 14.0).max(1.0).round() as i32;
-                fill_rect(&mut pix, x.round() as i32, ly, span_w.round() as i32, lh, fg);
+                fill_rect(pix, x.round() as i32, ly, span_w.round() as i32, lh, fg);
             }
             let _ = bg;
         }
     }
-
-    pix
 }
 
 fn cell_colors(

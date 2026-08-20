@@ -12,16 +12,17 @@ done.
   byte stream) so scripts don't break on slow machines. Hybrid mode (scripted
   setup, live middle) is the target: boring setup automated, the interesting
   part performed once by hand.
-- **VHS `.tape` import** — zero-switching-cost adoption for existing VHS
-  users: translate the styling and, once script mode exists, the input ops.
+- **`.tape` import** — zero-switching-cost adoption for users coming from
+  tape-scripted session generators: translate the styling and, once script
+  mode exists, the input ops.
 - **Windows validation** — ConPTY capture compiles in CI but has never been
   run by a human. Needs real testing before it's claimed as supported.
 
 ## Rendering
 
-- **Raw-render performance** — wall time is ~1.5× agg on long recordings.
-  Rasterization is single-threaded and unprofiled; frame-level parallelism is
-  the obvious first win.
+- **Raw-render performance** — wall time on long recordings is ~1.5× what
+  the fastest existing renderers manage. Rasterization is single-threaded
+  and unprofiled; frame-level parallelism is the obvious first win.
 - **Exact-palette hit rate** — glyph antialiasing alone generates hundreds of
   fg→bg blend shades, so the lossless 256-color GIF path fires less often
   than designed. Fix: quantize AA ramps to a fixed number of levels per color
