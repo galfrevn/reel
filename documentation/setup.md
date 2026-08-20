@@ -202,6 +202,9 @@ judge the result.
 
 - Outputs are `.gif`, `.webm`, `.png`, `.txt`. MP4 is deliberately
   unsupported (licensing) — use WebM.
-- reel edits existing recordings; it cannot type into or drive a program
-  (script mode is [on the roadmap](roadmap.md)).
+- reel's main mode edits recordings that already exist. It can also drive a
+  program itself — script mode (`reel run`) types, waits on screen text, and
+  renders in one step — but that path suits deterministic CLIs, not
+  interactive TUIs. Hybrid (scripted setup, live middle) is
+  [on the roadmap](roadmap.md).
 - Windows builds compile in CI but are untested.

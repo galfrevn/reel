@@ -123,6 +123,35 @@ footage before it.
 - **GIF, WebM, APNG, PNG** — routed by the output extension; `reel shot`
   grabs a single styled frame for screenshots.
 
+## How it compares to VHS
+
+[VHS](https://github.com/charmbracelet/vhs) is the reference tool in this
+space: you write a `.tape` script, it types the commands into a virtual
+terminal and renders what happens. reel comes at the problem from the other
+end — capture a session that actually happened, then edit the timeline.
+
+| | VHS | reel |
+|---|---|---|
+| Input | a `.tape` script, executed on every render | a `.cast` recording — the program runs **once** |
+| Restyling | re-runs the session | pure re-render, sub-second, nothing executes |
+| Interactive or non-deterministic apps | scripted step by step | performed by hand once, then edited |
+| Pacing | authored up front (`Sleep`, typing speed) | edited after the fact: `trim`, `cut`, `speed`, `freeze` |
+| Post-production | — | `zoom`, `caption`, `highlight`, keystroke overlay, redaction |
+| Scripted demos | the whole model | `reel run` covers the deterministic case too |
+| Install | `ttyd` + `ffmpeg` on `PATH` | one static binary |
+| Size control | encoder settings | `budget = "800kb"` + a printed degradation ladder |
+| Sound | — | procedural keystrokes and cues (WebM) |
+| Formats | GIF, MP4, WebM, PNG frames | GIF, WebM, APNG, PNG |
+| Sharing | `vhs publish` hosts the GIF | files out only; the registry shares *looks*, not videos |
+
+Rule of thumb: a handful of deterministic commands you want regenerated in
+CI on every release fits the tape model well — and VHS will hand you an MP4,
+which reel deliberately won't (H.264 licensing). A long, keyboard-driven,
+non-deterministic session — an agentic TUI thinking for 40 seconds, a fuzzy
+finder, a game — is the wrong shape to script: record it once, then cut the
+dead air, ramp the wait, zoom the payoff, and re-render as often as taste
+demands without the program ever running again.
+
 ## The same recording, in every look
 
 Templates are the complete visual identity — window chrome, wallpaper,

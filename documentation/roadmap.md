@@ -7,14 +7,15 @@ done.
 
 ## Capture
 
-- **Script mode** — `type`, `key`, `wait_text`, `wait_idle`, `capture_live`
-  for deterministic CLI demos. Waits match against the rendered grid (not the
-  byte stream) so scripts don't break on slow machines. Hybrid mode (scripted
-  setup, live middle) is the target: boring setup automated, the interesting
-  part performed once by hand.
+- **Script mode: hybrid capture** — the scripted path shipped (`reel run`
+  with `run`, `type`, `key`/`enter`, `wait_text`, `wait_idle`, `sleep`;
+  waits match the rendered grid, not the byte stream, so scripts survive
+  slow machines). What's missing is `capture_live`: scripted setup, then
+  hand control to a human for the interesting middle. `wait_idle` also needs
+  a second look — it can fail to fire on TUIs that repaint continuously.
 - **`.tape` import** — zero-switching-cost adoption for users coming from
-  tape-scripted session generators: translate the styling and, once script
-  mode exists, the input ops.
+  tape-scripted session generators (VHS and friends): translate the styling
+  and the input ops, which script mode now has equivalents for.
 - **Windows validation** — ConPTY capture compiles in CI but has never been
   run by a human. Needs real testing before it's claimed as supported.
 
