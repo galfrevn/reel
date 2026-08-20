@@ -492,25 +492,111 @@ pub fn encode_gif(frames: &[RgbaFrame], opts: &GifOptions) -> Result<GifReport, 
 
 /// Bounding box (x0, y0, x1, y1) of differing pixels, or None if identical.
 fn diff_rect(a: &[u8], b: &[u8], w: usize, h: usize) -> Option<(usize, usize, usize, usize)> {
+    diff_rect_bpp(a, b, w, h, 1)
+}
+
+/// Same, for `bpp`-byte pixels (4 for RGBA).
+fn diff_rect_bpp(
+    a: &[u8],
+    b: &[u8],
+    w: usize,
+    h: usize,
+    bpp: usize,
+) -> Option<(usize, usize, usize, usize)> {
     let mut x0 = w;
     let mut y0 = h;
     let mut x1 = 0usize;
     let mut y1 = 0usize;
     for y in 0..h {
-        let row = y * w;
-        let ra = &a[row..row + w];
-        let rb = &b[row..row + w];
+        let row = y * w * bpp;
+        let ra = &a[row..row + w * bpp];
+        let rb = &b[row..row + w * bpp];
         if ra == rb {
             continue;
         }
-        let first = ra.iter().zip(rb).position(|(p, q)| p != q).unwrap();
-        let last = w - 1 - ra.iter().zip(rb).rev().position(|(p, q)| p != q).unwrap();
+        let first = ra.iter().zip(rb).position(|(p, q)| p != q).unwrap() / bpp;
+        let last = (ra.len() - 1 - ra.iter().zip(rb).rev().position(|(p, q)| p != q).unwrap()) / bpp;
         x0 = x0.min(first);
         x1 = x1.max(last);
         y0 = y0.min(y);
         y1 = y1.max(y);
     }
     (y1 >= y0 && x1 >= x0).then_some((x0, y0, x1, y1))
+}
+
+// ---------------------------------------------------------------------------
+// APNG: animated PNG, streamed frame by frame with delta rectangles.
+// Lossless truecolor — the right choice where GIF's 256 colors pinch
+// (gradients, glow) and WebM isn't embeddable.
+// ---------------------------------------------------------------------------
+
+pub struct ApngStream<W: std::io::Write> {
+    writer: png::Writer<W>,
+    prev: Option<Vec<u8>>,
+    width: u32,
+    height: u32,
+    frames: usize,
+    expected: u32,
+}
+
+impl<W: std::io::Write> ApngStream<W> {
+    /// `frames` must be the exact number of frames that will be pushed.
+    pub fn new(
+        out: W,
+        width: u32,
+        height: u32,
+        frames: u32,
+        looping: bool,
+    ) -> Result<Self, EncodeError> {
+        let mut enc = png::Encoder::new(out, width, height);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.set_animated(frames, if looping { 0 } else { 1 })?;
+        let writer = enc.write_header()?;
+        Ok(ApngStream { writer, prev: None, width, height, frames: 0, expected: frames })
+    }
+
+    pub fn push(&mut self, rgba: &[u8], dur_s: f64) -> Result<(), EncodeError> {
+        let ms = (dur_s * 1000.0).round().clamp(1.0, 65_535.0) as u16;
+        self.writer.set_frame_delay(ms, 1000)?;
+        self.writer.set_dispose_op(png::DisposeOp::None)?;
+        self.writer.set_blend_op(png::BlendOp::Source)?;
+        let (w, h) = (self.width as usize, self.height as usize);
+        match &self.prev {
+            None => {
+                // First frame doubles as the PNG's default image; the fcTL
+                // is implicit and must stay full-size.
+                self.writer.write_image_data(rgba)?;
+            }
+            Some(prev) => {
+                let rect = diff_rect_bpp(prev, rgba, w, h, 4)
+                    // Identical frame: repaint one pixel to carry the delay.
+                    .unwrap_or((0, 0, 0, 0));
+                let (x0, y0, x1, y1) = rect;
+                let (rw, rh) = (x1 - x0 + 1, y1 - y0 + 1);
+                let mut buf = Vec::with_capacity(rw * rh * 4);
+                for y in y0..=y1 {
+                    let row = (y * w + x0) * 4;
+                    buf.extend_from_slice(&rgba[row..row + rw * 4]);
+                }
+                // Order matters: reset clears the previous frame's rect so
+                // the bounds checks see a clean slate.
+                self.writer.reset_frame_position()?;
+                self.writer.set_frame_dimension(rw as u32, rh as u32)?;
+                self.writer.set_frame_position(x0 as u32, y0 as u32)?;
+                self.writer.write_image_data(&buf)?;
+            }
+        }
+        self.prev = Some(rgba.to_vec());
+        self.frames += 1;
+        Ok(())
+    }
+
+    pub fn finish(self) -> Result<usize, EncodeError> {
+        debug_assert_eq!(self.frames as u32, self.expected, "frame count promise broken");
+        self.writer.finish()?;
+        Ok(self.frames)
+    }
 }
 
 /// Straight-RGBA → PNG.
@@ -586,6 +672,26 @@ mod tests {
         }
         let rep = encode_gif(&[f], &GifOptions { looping: true, max_colors: 128 }).unwrap();
         assert!(matches!(rep.palette, PaletteMode::Quantized(n) if n <= 128));
+    }
+
+    #[test]
+    fn apng_streams_delta_frames() {
+        let mut bytes = Vec::new();
+        {
+            let mut s = ApngStream::new(&mut bytes, 20, 10, 3, true).unwrap();
+            let f0 = solid(20, 10, [0, 0, 0], 0.5);
+            let mut f1 = f0.data.clone();
+            f1[(3 * 20 + 5) * 4] = 200; // one pixel changes
+            s.push(&f0.data, 0.5).unwrap();
+            s.push(&f1, 0.5).unwrap();
+            s.push(&f1, 0.5).unwrap(); // identical: keep-alive
+            assert_eq!(s.finish().unwrap(), 3);
+        }
+        assert_eq!(&bytes[1..4], b"PNG");
+        // acTL chunk marks it animated.
+        assert!(bytes.windows(4).any(|w| w == b"acTL"));
+        // Delta frame stays tiny: whole file well under full 3-frame size.
+        assert!(bytes.len() < 1200, "apng too big: {}", bytes.len());
     }
 
     #[test]

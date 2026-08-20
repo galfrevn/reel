@@ -200,11 +200,14 @@ pub fn render(
             std::fs::write(&out_path, text)?;
             done(&out_path, quiet)
         }
+        "apng" => render_apng(&loaded, cfg.clone(), &out_path, quiet),
         "webm" => render_webm(&loaded, cfg.clone(), &out_path, quiet),
         "mp4" => bail!(
             "mp4 is deferred (H.264 licensing) — render a .webm, or use .gif for READMEs"
         ),
-        other => bail!("unsupported output extension `.{other}` (use .gif, .webm, .png, or .txt)"),
+        other => bail!(
+            "unsupported output extension `.{other}` (use .gif, .webm, .apng, .png, or .txt)"
+        ),
     };
     if result.is_ok() && cfg.output.subtitles {
         let vtt_path = out_path.with_extension("vtt");
@@ -214,6 +217,56 @@ pub fn render(
         }
     }
     result
+}
+
+/// Animated PNG: lossless truecolor, streamed in one pass (no palette to
+/// negotiate and no budget ladder — sizes are what the content costs).
+fn render_apng(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -> Result<()> {
+    if cfg.output.budget.is_some() && !quiet {
+        eprintln!("note: budget is ignored for .apng (lossless format)");
+    }
+    let (settings, warns) = settings_from_config(&cfg)?;
+    let fps = settings.fps;
+    let blink = settings.cursor_blink;
+    let (mut renderer, font_warns) = Renderer::new(settings)?;
+    renderer.fit_exact(loaded.cast.cols(), loaded.cast.rows());
+    print_warnings(&warns, quiet);
+    print_warnings(&font_warns, quiet);
+
+    let plans = plan_with(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps, blink);
+    if !quiet {
+        eprintln!(
+            "rendering {} frames ({:.1}s output from {:.1}s recording)…",
+            plans.len(),
+            loaded.timeline.out_duration(),
+            loaded.cast.duration()
+        );
+    }
+    let (cw, ch) = renderer.canvas_size(loaded.cast.cols(), loaded.cast.rows());
+    let mut bytes = Vec::new();
+    let frames = {
+        let mut stream = reel_encode::ApngStream::new(
+            &mut bytes,
+            cw,
+            ch,
+            plans.len() as u32,
+            cfg.output.looping,
+        )?;
+        render_each(&mut renderer, &plans, &loaded.snapshots, |rgba, _, _, dur| {
+            stream.push(rgba, dur).map_err(Into::into)
+        })?;
+        stream.finish()?
+    };
+    std::fs::write(out_path, &bytes)?;
+    if !quiet {
+        eprintln!(
+            "{}: {} — {} frames, lossless truecolor",
+            out_path.display(),
+            human_size(bytes.len() as u64),
+            frames
+        );
+    }
+    Ok(())
 }
 
 /// Caption windows in output time: (start, end, text).
