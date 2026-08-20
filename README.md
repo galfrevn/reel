@@ -91,10 +91,10 @@ npx skills add galfrevn/reel
 
 | Doc | What's in it |
 |---|---|
-| [docs/idea.md](docs/idea.md) | What reel is, why it exists, and what it deliberately isn't |
-| [docs/setup.md](docs/setup.md) | Full user guide: install, recording, the `.reel` format, templates, audio, agent skill |
-| [docs/development.md](docs/development.md) | Building from source, workspace layout, tests, CI |
-| [docs/roadmap.md](docs/roadmap.md) | What's next: script mode, `.tape` import, performance, formats |
+| [documentation/idea.md](documentation/idea.md) | What reel is, why it exists, and what it deliberately isn't |
+| [documentation/setup.md](documentation/setup.md) | Full user guide: install, recording, the `.reel` format, templates, audio, agent skill |
+| [documentation/development.md](documentation/development.md) | Building from source, workspace layout, tests, CI |
+| [documentation/roadmap.md](documentation/roadmap.md) | What's next: script mode, `.tape` import, performance, formats |
 
 ## License
 
