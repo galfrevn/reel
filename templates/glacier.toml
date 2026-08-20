@@ -1,0 +1,21 @@
+schema = 2
+name = "glacier"
+description = "Icy pale-blue light mode — crisp and cold for daylight docs"
+font = "Geist Mono Medium"
+theme = "paper-light"
+window = "rounded"
+titlebar = "none"
+corner_radius = 10.0
+padding = 26.0
+inset = 48.0
+border = "#00000014"
+
+[canvas.gradient]
+angle = 180.0
+from = "#e8f2fb"
+to = "#cfe3f5"
+
+[shadow]
+blur = 26.0
+opacity = 0.16
+offset_y = 8.0

@@ -43,7 +43,7 @@ pub fn add(source: &str) -> Result<()> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading {}", path.display()))?;
         let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("template");
-        let installed = install(&text, stem)?;
+        let installed = install_at(&text, stem, path.parent())?;
         println!("installed `{installed}` from {}", path.display());
         return Ok(());
     }
@@ -73,11 +73,37 @@ pub fn add(source: &str) -> Result<()> {
 
 /// Validates and writes one template; returns the installed name.
 fn install(text: &str, fallback_name: &str) -> Result<String> {
-    let t = template::from_toml(text, fallback_name)
+    install_at(text, fallback_name, None)
+}
+
+/// [`install`] with the source file's directory, so a local template's
+/// relative image assets (wallpaper, badge logo) validate and get copied
+/// next to the installed TOML — installed templates resolve images against
+/// the templates dir.
+fn install_at(text: &str, fallback_name: &str, base_dir: Option<&Path>) -> Result<String> {
+    let t = template::from_toml_at(text, fallback_name, base_dir)
         .map_err(|e| anyhow!("invalid template: {e}"))?;
     let dir = reel_render::paths::templates_dir()
         .ok_or_else(|| anyhow!("cannot determine the reel config directory"))?;
     std::fs::create_dir_all(&dir)?;
+    for image in template::referenced_images(&t) {
+        let src = Path::new(&image);
+        if src.is_absolute() {
+            continue; // resolves the same from anywhere
+        }
+        if src.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            bail!("image path `{image}` escapes the template directory (`..`)");
+        }
+        let Some(base) = base_dir else {
+            bail!("template references image `{image}` but has no source directory");
+        };
+        let dst = dir.join(src);
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(base.join(src), &dst)
+            .with_context(|| format!("copying image asset `{image}`"))?;
+    }
     std::fs::write(dir.join(format!("{}.toml", t.name)), text)?;
     Ok(t.name)
 }
@@ -129,7 +155,7 @@ fn resolve_try_source(source: &str, dir: &Path) -> Result<(String, String)> {
     let path = Path::new(source);
     if path.extension().is_some_and(|e| e == "toml") && path.exists() {
         let text = std::fs::read_to_string(path)?;
-        let t = template::from_toml(&text, "preview")
+        let t = template::from_toml_at(&text, "preview", path.parent())
             .map_err(|e| anyhow!("invalid template {}: {e}", path.display()))?;
         return Ok((source.to_string(), t.name));
     }

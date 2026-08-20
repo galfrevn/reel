@@ -3,7 +3,7 @@
   "packs": [
     {
       "repo": "galfrevn/reel",
-      "description": "Official starter pack \u2014 ships with the reel repo",
+      "description": "Official starter pack — ships with the reel repo",
       "templates": [
         {
           "name": "synthwave",
@@ -16,7 +16,7 @@
         },
         {
           "name": "slate",
-          "description": "Muted dark slate with dot titlebar \u2014 docs-site sober",
+          "description": "Muted dark slate with dot titlebar — docs-site sober",
           "tags": [
             "dark",
             "minimal",
@@ -25,43 +25,192 @@
         },
         {
           "name": "latte",
-          "description": "Warm light mode with macOS chrome \u2014 READMEs that feel friendly",
+          "description": "Warm light mode with macOS chrome — READMEs that feel friendly",
           "tags": [
             "light",
             "macos",
             "warm"
+          ]
+        },
+        {
+          "name": "noir",
+          "description": "Code on pure black inside a hairline frame — stark launch-tweet monochrome with hot pink accents",
+          "tags": [
+            "dark",
+            "minimal",
+            "frame",
+            "screenshot"
+          ]
+        },
+        {
+          "name": "graphite",
+          "description": "Charcoal card on charcoal — muted pastel syntax, quiet enough for serious docs",
+          "tags": [
+            "dark",
+            "minimal",
+            "docs",
+            "screenshot"
+          ]
+        },
+        {
+          "name": "iris",
+          "description": "Violet on deep blue-gray with a filed-away titlebar — the editor-tab look",
+          "tags": [
+            "dark",
+            "violet",
+            "editor",
+            "screenshot"
+          ]
+        },
+        {
+          "name": "ember",
+          "description": "Everything burns red — grainy black-and-crimson monochrome for dramatic reveals",
+          "tags": [
+            "dark",
+            "red",
+            "grain",
+            "dramatic"
+          ]
+        },
+        {
+          "name": "breeze",
+          "description": "Blue-to-violet-to-pink gradient with macOS chrome — the classic code-screenshot look",
+          "tags": [
+            "dark",
+            "gradient",
+            "macos",
+            "screenshot"
+          ]
+        },
+        {
+          "name": "candy",
+          "description": "Pink-lavender-sky gradient, playful and bright — product-hunt launch energy",
+          "tags": [
+            "dark",
+            "gradient",
+            "playful",
+            "launch"
+          ]
+        },
+        {
+          "name": "dusk",
+          "description": "Warm sunset gradient fading to plum — golden-hour glow for launch posts",
+          "tags": [
+            "dark",
+            "gradient",
+            "warm",
+            "launch"
+          ]
+        },
+        {
+          "name": "vercel",
+          "description": "Black on black, hairline chrome, the ▲ prompt — deploy-announcement minimalism",
+          "tags": [
+            "dark",
+            "minimal",
+            "black",
+            "deploy"
+          ]
+        },
+        {
+          "name": "glacier",
+          "description": "Icy pale-blue light mode — crisp and cold for daylight docs",
+          "tags": [
+            "light",
+            "docs",
+            "cool"
           ]
         }
       ],
       "sounds": [
         {
           "name": "laser",
-          "description": "A quick descending zap \u2014 deletions, dismissals, misses",
+          "description": "A quick descending zap — deletions, dismissals, misses",
           "tags": [
             "ui",
             "zap"
           ]
         },
         {
+          "name": "tap",
+          "description": "A single muted key tap, felt-dampened — minimal keyboard accents",
+          "tags": [
+            "keyboard",
+            "minimal",
+            "ui"
+          ]
+        },
+        {
+          "name": "thock",
+          "description": "A deep, round key bottom-out — the satisfying low thock, very quiet",
+          "tags": [
+            "keyboard",
+            "minimal"
+          ]
+        },
+        {
+          "name": "pop",
+          "description": "A tiny bubble pop — hover, select, small UI responses",
+          "tags": [
+            "ui",
+            "minimal"
+          ]
+        },
+        {
+          "name": "blip",
+          "description": "A clean digital blip, one pixel of sound — cursor moves, focus changes",
+          "tags": [
+            "ui",
+            "minimal"
+          ]
+        },
+        {
+          "name": "send",
+          "description": "Two soft rising notes — submit, send, confirm without fanfare",
+          "tags": [
+            "ui",
+            "submit",
+            "minimal"
+          ]
+        },
+        {
+          "name": "step",
+          "description": "The faintest metronome tick — loading beats, progress steps, spinners",
+          "tags": [
+            "ui",
+            "loading",
+            "minimal"
+          ]
+        },
+        {
+          "name": "ping",
+          "description": "One clean glassy ping with a whisper of air — notifications, arrivals",
+          "tags": [
+            "ui",
+            "notification",
+            "minimal"
+          ]
+        },
+        {
+          "name": "hush",
+          "description": "A soft low no — gentle dismissal or error, more sigh than buzzer",
+          "tags": [
+            "ui",
+            "error",
+            "minimal"
+          ]
+        },
+        {
           "name": "mouse-click",
-          "description": "A crisp two-part button click \u2014 cursor actions, selections",
+          "description": "A crisp two-part button click — cursor actions, selections",
           "tags": [
             "ui",
             "click"
           ]
         },
         {
-          "name": "pop",
-          "description": "A round bubble pop \u2014 toggles, pickups, tiny wins",
-          "tags": [
-            "ui",
-            "click",
-            "playful"
-          ]
-        },
-        {
           "name": "snap",
-          "description": "A dry finger snap \u2014 attention, beat marks, section changes",
+          "description": "A dry finger snap — attention, beat marks, section changes",
           "tags": [
             "ui",
             "click",

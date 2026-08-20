@@ -60,7 +60,11 @@ freeze  last 1.5s
 
 - **Timeline editing** — `trim`, `cut`, `speed`, `zoom`, `caption`,
   `highlight`, `freeze`… applied to a frozen recording, so iterating costs
-  nothing (`reel watch` re-renders on save).
+  nothing (`reel watch` re-renders on save). Press `Ctrl+]` while recording
+  to drop markers, then edit by name: `cut @1..@2`.
+- **Keystroke overlay** — `keys on` shows what you typed as screenkey-style
+  chips, straight from the recorded input; `redact "pattern"` masks secrets
+  before they ship (renders warn about emails/tokens they spot).
 - **Templates that look designed** — `glass`, `minimal`, `classic`, `geist`,
   `paper`, `crt`; bring your own as TOML or install packs from GitHub.
   Themes import from base16, Alacritty, and iTerm2.
@@ -91,10 +95,10 @@ npx skills add galfrevn/reel
 
 | Doc | What's in it |
 |---|---|
-| [docs/idea.md](docs/idea.md) | What reel is, why it exists, and what it deliberately isn't |
-| [docs/setup.md](docs/setup.md) | Full user guide: install, recording, the `.reel` format, templates, audio, agent skill |
-| [docs/development.md](docs/development.md) | Building from source, workspace layout, tests, CI |
-| [docs/roadmap.md](docs/roadmap.md) | What's next: script mode, `.tape` import, performance, formats |
+| [documentation/idea.md](documentation/idea.md) | What reel is, why it exists, and what it deliberately isn't |
+| [documentation/setup.md](documentation/setup.md) | Full user guide: install, recording, the `.reel` format, templates, audio, agent skill |
+| [documentation/development.md](documentation/development.md) | Building from source, workspace layout, tests, CI |
+| [documentation/roadmap.md](documentation/roadmap.md) | What's next: script mode, `.tape` import, performance, formats |
 
 ## License
 

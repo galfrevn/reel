@@ -11,6 +11,7 @@
 //!    are atomic because the parser buffers them until ESU.
 
 pub mod graphics;
+pub mod keys;
 pub mod redact;
 pub mod typing;
 pub use typing::{smooth_typing, KeyPress};

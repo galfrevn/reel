@@ -1,0 +1,31 @@
+schema = 1
+name = "hush"
+description = "A soft low no — gentle dismissal or error, more sigh than buzzer"
+gain = 0.5
+
+[[layers]]
+kind = "tone"
+attack = 0.003
+decay = 0.12
+peak = 0.14
+waveform = "sine"
+frequency = 220
+glide_to = 160
+glide_time = 0.1
+
+[[layers]]
+kind = "tone"
+attack = 0.003
+decay = 0.15
+peak = 0.1
+waveform = "sine"
+frequency = 110
+
+[[layers]]
+kind = "noise"
+attack = 0.005
+decay = 0.08
+peak = 0.05
+filter = "lowpass"
+frequency = 300
+q = 0.7

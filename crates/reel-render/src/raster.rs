@@ -11,6 +11,30 @@ pub struct GridStyle<'a> {
     pub line_height: f32,
     /// Draw the cursor (false during a blink's off phase).
     pub cursor_visible: bool,
+    /// Fractional cell position override — mid-slide cursor animation.
+    pub cursor_pos: Option<(f32, f32)>,
+    /// Template-forced cursor shape (recordings keep theirs otherwise).
+    pub cursor_style: Option<CursorShape>,
+    /// Cursor color override (default: the theme's).
+    pub cursor_color: Option<Rgba>,
+    /// Terminal background alpha (1 = opaque); below 1 the window glass
+    /// shows through cells that use the default background.
+    pub bg_alpha: f32,
+}
+
+impl<'a> GridStyle<'a> {
+    pub fn new(theme: &'a Theme, font_size: f32, line_height: f32, cursor_visible: bool) -> Self {
+        GridStyle {
+            theme,
+            font_size,
+            line_height,
+            cursor_visible,
+            cursor_pos: None,
+            cursor_style: None,
+            cursor_color: None,
+            bg_alpha: 1.0,
+        }
+    }
 }
 
 /// Renders the full grid at the given font size. The same routine serves the
@@ -32,7 +56,13 @@ pub fn raster_grid_into(r: &mut Rasterizer, snap: &Snapshot, style: &GridStyle, 
         *pix = Pixmap::new(w, h).expect("grid pixmap");
     }
 
-    fill(pix, style.theme.bg);
+    let base_bg = if style.bg_alpha >= 1.0 {
+        style.theme.bg
+    } else {
+        let a = (style.theme.bg.a as f32 * style.bg_alpha.clamp(0.0, 1.0)) as u8;
+        Rgba { a, ..style.theme.bg }
+    };
+    fill(pix, base_bg);
 
     let ov = &snap.palette_overrides;
     // Backgrounds first (a glyph may overhang its cell).
@@ -164,15 +194,19 @@ fn draw_cursor(
     if cur.shape == CursorShape::Hidden || cur.col >= snap.cols || cur.row >= snap.rows {
         return None;
     }
-    let color = style.theme.cursor;
-    let x = (cur.col as f32 * cell_w).round() as i32;
-    let y = (cur.row as f32 * cell_h).round() as i32;
+    let shape = style.cursor_style.unwrap_or(cur.shape);
+    let color = style.cursor_color.unwrap_or(style.theme.cursor);
+    let (fcol, frow) = style.cursor_pos.unwrap_or((cur.col as f32, cur.row as f32));
+    let at_rest = style.cursor_pos.is_none();
+    let x = (fcol * cell_w).round() as i32;
+    let y = (frow * cell_h).round() as i32;
     let w = cell_w.round() as i32;
     let h = cell_h.round() as i32;
-    match cur.shape {
+    match shape {
         CursorShape::Block => {
             fill_rect(pix, x, y, w, h, color);
-            Some((cur.col, cur.row, style.theme.bg))
+            // Mid-slide the block isn't cell-aligned, so no glyph to flip.
+            at_rest.then_some((cur.col, cur.row, style.theme.bg))
         }
         CursorShape::Beam => {
             fill_rect(pix, x, y, (cell_w * 0.15).max(2.0).round() as i32, h, color);
@@ -193,9 +227,7 @@ fn draw_cursor(
 
 pub fn fill(pix: &mut Pixmap, c: Rgba) {
     let px = premul(c);
-    for p in pix.pixels_mut() {
-        *p = px;
-    }
+    pix.pixels_mut().fill(px);
 }
 
 pub fn fill_rect(pix: &mut Pixmap, x: i32, y: i32, w: i32, h: i32, c: Rgba) {
@@ -215,28 +247,39 @@ pub fn fill_rect(pix: &mut Pixmap, x: i32, y: i32, w: i32, h: i32, c: Rgba) {
     let data = pix.pixels_mut();
     for yy in y0..y1 {
         let row = yy as usize * pw as usize;
-        for xx in x0..x1 {
-            let d = &mut data[row + xx as usize];
-            *d = if opaque { src } else { blend(src, *d) };
+        if opaque {
+            data[row + x0 as usize..row + x1 as usize].fill(src);
+        } else {
+            for d in &mut data[row + x0 as usize..row + x1 as usize] {
+                *d = blend(src, *d);
+            }
         }
     }
 }
 
 pub fn blit_mask(pix: &mut Pixmap, x: i32, y: i32, w: u32, h: u32, mask: &[u8], color: Rgba) {
     let (pw, ph) = (pix.width() as i32, pix.height() as i32);
+    let gx0 = (-x).max(0);
+    let gy0 = (-y).max(0);
+    let gx1 = (pw - x).min(w as i32);
+    let gy1 = (ph - y).min(h as i32);
+    if gx0 >= gx1 || gy0 >= gy1 {
+        return;
+    }
+    let solid = premul(color);
     let data = pix.pixels_mut();
-    for gy in 0..h as i32 {
-        let py = y + gy;
-        if py < 0 || py >= ph {
-            continue;
-        }
-        for gx in 0..w as i32 {
-            let px = x + gx;
-            if px < 0 || px >= pw {
+    for gy in gy0..gy1 {
+        let srow = gy as usize * w as usize;
+        let drow = (y + gy) as isize * pw as isize + x as isize;
+        for gx in gx0..gx1 {
+            let a = mask[srow + gx as usize] as u32;
+            if a == 0 {
                 continue;
             }
-            let a = mask[(gy as u32 * w + gx as u32) as usize] as u32;
-            if a == 0 {
+            let d = &mut data[(drow + gx as isize) as usize];
+            // Fully-covered pixels (glyph interiors) skip the blend math.
+            if a == 255 && color.a == 255 {
+                *d = solid;
                 continue;
             }
             let a = a * color.a as u32 / 255;
@@ -247,7 +290,6 @@ pub fn blit_mask(pix: &mut Pixmap, x: i32, y: i32, w: u32, h: u32, mask: &[u8], 
                 a as u8,
             )
             .unwrap();
-            let d = &mut data[py as usize * pw as usize + px as usize];
             *d = blend(src, *d);
         }
     }
@@ -255,18 +297,19 @@ pub fn blit_mask(pix: &mut Pixmap, x: i32, y: i32, w: u32, h: u32, mask: &[u8], 
 
 pub fn blit_rgba(pix: &mut Pixmap, x: i32, y: i32, w: u32, h: u32, rgba: &[u8]) {
     let (pw, ph) = (pix.width() as i32, pix.height() as i32);
+    let gx0 = (-x).max(0);
+    let gy0 = (-y).max(0);
+    let gx1 = (pw - x).min(w as i32);
+    let gy1 = (ph - y).min(h as i32);
+    if gx0 >= gx1 || gy0 >= gy1 {
+        return;
+    }
     let data = pix.pixels_mut();
-    for gy in 0..h as i32 {
-        let py = y + gy;
-        if py < 0 || py >= ph {
-            continue;
-        }
-        for gx in 0..w as i32 {
-            let px = x + gx;
-            if px < 0 || px >= pw {
-                continue;
-            }
-            let i = ((gy as u32 * w + gx as u32) * 4) as usize;
+    for gy in gy0..gy1 {
+        let srow = gy as usize * w as usize;
+        let drow = (y + gy) as isize * pw as isize + x as isize;
+        for gx in gx0..gx1 {
+            let i = (srow + gx as usize) * 4;
             let a = rgba[i + 3] as u32;
             if a == 0 {
                 continue;
@@ -278,7 +321,7 @@ pub fn blit_rgba(pix: &mut Pixmap, x: i32, y: i32, w: u32, h: u32, rgba: &[u8]) 
                 a as u8,
             )
             .unwrap();
-            let d = &mut data[py as usize * pw as usize + px as usize];
+            let d = &mut data[(drow + gx as isize) as usize];
             *d = blend(src, *d);
         }
     }
@@ -325,7 +368,7 @@ mod tests {
         let s = snap(r#"[0.1, "o", "\u001b[31mhello\u001b[0m"]"#, 20, 4);
         let theme = builtin("reel-dark").unwrap();
         let mut r = Rasterizer::new(None).unwrap().0;
-        let pix = raster_grid(&mut r, &s, &GridStyle { theme: &theme, font_size: 17.0, line_height: 1.4, cursor_visible: true });
+        let pix = raster_grid(&mut r, &s, &GridStyle::new(&theme, 17.0, 1.4, true));
         assert!(pix.width() > 100 && pix.height() > 40);
         // Some pixel in the first row band should be red-ish (fg Indexed(1)).
         let red = theme.ansi[1];
@@ -340,7 +383,7 @@ mod tests {
         let s = snap(r#"[0.1, "o", "x"]"#, 10, 2);
         let theme = builtin("reel-dark").unwrap();
         let mut r = Rasterizer::new(None).unwrap().0;
-        let pix = raster_grid(&mut r, &s, &GridStyle { theme: &theme, font_size: 16.0, line_height: 1.2, cursor_visible: true });
+        let pix = raster_grid(&mut r, &s, &GridStyle::new(&theme, 16.0, 1.2, true));
         let cur = theme.cursor;
         let found = pix.pixels().iter().any(|p| {
             (p.red() as i32 - cur.r as i32).abs() < 12

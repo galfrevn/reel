@@ -1,0 +1,21 @@
+schema = 1
+name = "step"
+description = "The faintest metronome tick — loading beats, progress steps, spinners"
+gain = 0.35
+
+[[layers]]
+kind = "tone"
+attack = 0.0005
+decay = 0.025
+peak = 0.08
+waveform = "triangle"
+frequency = 2000
+
+[[layers]]
+kind = "noise"
+attack = 0.0005
+decay = 0.01
+peak = 0.04
+filter = "highpass"
+frequency = 4000
+q = 1.0

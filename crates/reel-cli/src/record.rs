@@ -139,7 +139,8 @@ pub fn record(out: &Path, size: Option<String>, command: Vec<String>) -> Result<
     let mut pty_writer = pair.master.take_writer().map_err(|e| anyhow!("pty writer: {e}"))?;
 
     eprintln!(
-        "reel record: capturing to {} — exit the program (or shell) to stop",
+        "reel record: capturing to {} — exit the program (or shell) to stop; \
+         Ctrl+] drops a marker",
         out.display()
     );
     // Raw mode needs a real terminal; without one (CI, scripts) we still
@@ -174,22 +175,41 @@ pub fn record(out: &Path, size: Option<String>, command: Vec<String>) -> Result<
 
     // Real keyboard → child + sidecar. Detached: a blocking stdin read has
     // no portable cancel, and the process exits right after the child does.
+    // Ctrl+] never reaches the child: it becomes a cast marker instead.
+    let markers = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     {
         let inputs = inputs.clone();
         let done = done.clone();
+        let writer = writer.clone();
+        let markers = markers.clone();
         std::thread::spawn(move || {
             let mut stdin = std::io::stdin();
             let mut carry = Utf8Carry::default();
             let mut buf = [0u8; 1024];
+            let mut clean = Vec::with_capacity(1024);
             while let Ok(n) = stdin.read(&mut buf) {
                 if n == 0 || done.load(Ordering::Relaxed) {
                     break;
                 }
-                if pty_writer.write_all(&buf[..n]).is_err() {
+                let dropped = strip_marker_bytes(&buf[..n], &mut clean);
+                for _ in 0..dropped {
+                    let t = started.elapsed().as_secs_f64();
+                    let _ = writer.lock().unwrap().event(t, "m", "");
+                    markers.fetch_add(1, Ordering::Relaxed);
+                    // Audible ack; nothing visual, so the child's screen
+                    // stays untouched.
+                    let mut stdout = std::io::stdout();
+                    let _ = stdout.write_all(b"\x07");
+                    let _ = stdout.flush();
+                }
+                if clean.is_empty() {
+                    continue;
+                }
+                if pty_writer.write_all(&clean).is_err() {
                     break;
                 }
                 let _ = pty_writer.flush();
-                let value = carry.push(&buf[..n]);
+                let value = carry.push(&clean);
                 if !value.is_empty() {
                     inputs.lock().unwrap().push(InputEvent {
                         t: started.elapsed().as_secs_f64(),
@@ -259,13 +279,37 @@ pub fn record(out: &Path, size: Option<String>, command: Vec<String>) -> Result<
     }
 
     let secs = started.elapsed().as_secs_f64();
+    let n_markers = markers.load(Ordering::Relaxed);
+    let marker_note = match n_markers {
+        0 => String::new(),
+        1 => ", 1 marker (@1)".to_string(),
+        n => format!(", {n} markers (@1..@{n})"),
+    };
     eprintln!(
-        "\nrecorded {secs:.1}s → {} (+.reelmeta, {n_inputs} input events){}",
+        "\nrecorded {secs:.1}s → {} (+.reelmeta, {n_inputs} input events{marker_note}){}",
         out.display(),
         if status.success() { String::new() } else { format!(" — child exited with {status:?}") }
     );
     eprintln!("render it: reel render {}", out.display());
     Ok(())
+}
+
+/// Ctrl+] (0x1D), intercepted from the recording keyboard as "drop a marker".
+const MARKER_BYTE: u8 = 0x1d;
+
+/// Copies `buf` into `clean` minus any marker bytes; returns how many were
+/// stripped.
+fn strip_marker_bytes(buf: &[u8], clean: &mut Vec<u8>) -> usize {
+    clean.clear();
+    let mut dropped = 0;
+    for &b in buf {
+        if b == MARKER_BYTE {
+            dropped += 1;
+        } else {
+            clean.push(b);
+        }
+    }
+    dropped
 }
 
 /// "120x40" → (120, 40).
@@ -307,6 +351,17 @@ mod tests {
         let mut out = c.push(a);
         out.push_str(&c.push(b));
         assert_eq!(out, "héllo → 世界");
+    }
+
+    #[test]
+    fn marker_bytes_strip_and_count() {
+        let mut clean = Vec::new();
+        assert_eq!(strip_marker_bytes(b"hello", &mut clean), 0);
+        assert_eq!(clean, b"hello");
+        assert_eq!(strip_marker_bytes(b"ab\x1dcd\x1d", &mut clean), 2);
+        assert_eq!(clean, b"abcd");
+        assert_eq!(strip_marker_bytes(b"\x1d", &mut clean), 1);
+        assert!(clean.is_empty());
     }
 
     #[test]

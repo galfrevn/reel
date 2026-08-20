@@ -1,0 +1,20 @@
+schema = 2
+name = "breeze"
+description = "Blue-to-violet-to-pink gradient with macOS chrome — the classic code-screenshot look"
+font = "Geist Mono Medium"
+theme = "tokyo-night"
+window = "macos"
+titlebar = "traffic-lights"
+corner_radius = 14.0
+padding = 28.0
+inset = 64.0
+border = "#ffffff1f"
+
+[canvas.gradient]
+angle = 135.0
+stops = [["#3d5afe", 0.0], ["#7c4dff", 0.5], ["#e040fb", 1.0]]
+
+[shadow]
+blur = 44.0
+opacity = 0.45
+offset_y = 14.0

@@ -35,8 +35,9 @@ fn webm_with_audio_parses_and_reports_both_tracks() {
     let audio = beep(3.0);
     let report = encode_webm(&frames, Some(&audio), &WebmOptions::default()).unwrap();
     assert!(report.has_audio);
-    // Default output is constant-frame-rate at 60fps: 3s → 180 frames.
-    assert_eq!(report.frames, 180);
+    // Default output is a 60fps tick grid holding stills at ~5fps: each
+    // 0.25s frame spans 15 ticks → 2 blocks (change + one hold) → 24 total.
+    assert_eq!(report.frames, 24);
 
     let dir = std::env::temp_dir().join("reel-webm-test");
     std::fs::create_dir_all(&dir).unwrap();
@@ -79,12 +80,13 @@ fn webm_without_audio_has_one_track() {
 }
 
 #[test]
-fn cfr_duplicates_stills_on_a_fixed_clock() {
-    // Two half-second stills at 20fps CFR → exactly 20 video frames.
+fn cfr_holds_stills_on_a_steady_cadence() {
+    // Two half-second stills at 20fps: 10 ticks each, held every 4 ticks
+    // (~5fps) → 3 blocks per still, not a full encode per tick.
     let frames = vec![gradient_frame(64, 64, 0, 0.5), gradient_frame(64, 64, 120, 0.5)];
     let opts = WebmOptions { cfr_fps: Some(20), ..Default::default() };
     let report = encode_webm(&frames, None, &opts).unwrap();
-    assert_eq!(report.frames, 20);
+    assert_eq!(report.frames, 6);
     // Duplicated frames must be nearly free.
     let vfr = encode_webm(
         &frames,

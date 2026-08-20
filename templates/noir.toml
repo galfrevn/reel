@@ -1,0 +1,29 @@
+schema = 2
+name = "noir"
+description = "Code on pure black inside a hairline frame — stark launch-tweet monochrome with hot pink accents"
+font = "Geist Mono Medium"
+window = "plain"
+titlebar = "none"
+corner_radius = 0.0
+padding = 30.0
+inset = 56.0
+border = "#ffffff1a"
+
+[canvas]
+solid = "#0b0b0d"
+
+[cursor]
+style = "beam"
+color = "#ff2d8d"
+
+[theme]
+name = "noir"
+fg = "#f2f2f7"
+bg = "#0b0b0d"
+cursor = "#ff2d8d"
+ansi = [
+    "#1a1a1f", "#ff5c7a", "#5ce087", "#ffd479",
+    "#7d8cff", "#b18cff", "#6fe0e8", "#e8e8ee",
+    "#55555e", "#ff7d95", "#7fe8a2", "#ffe09a",
+    "#9da8ff", "#c7a9ff", "#93eaf0", "#ffffff",
+]

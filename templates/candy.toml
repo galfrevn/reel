@@ -1,0 +1,20 @@
+schema = 2
+name = "candy"
+description = "Pink-lavender-sky gradient, playful and bright — product-hunt launch energy"
+font = "Geist Mono Medium"
+theme = "catppuccin-mocha"
+window = "macos"
+titlebar = "traffic-lights"
+corner_radius = 16.0
+padding = 28.0
+inset = 60.0
+border = "#ffffff26"
+
+[canvas.gradient]
+angle = 120.0
+stops = [["#f7a8d8", 0.0], ["#a78bfa", 0.55], ["#7dd3fc", 1.0]]
+
+[shadow]
+blur = 38.0
+opacity = 0.35
+offset_y = 12.0

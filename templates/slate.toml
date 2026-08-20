@@ -1,4 +1,4 @@
-schema = 1
+schema = 2
 name = "slate"
 description = "Muted dark slate with dot titlebar — docs-site sober"
 theme = "geist-dark"

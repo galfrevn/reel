@@ -20,9 +20,13 @@ done.
 
 ## Rendering
 
-- **Raw-render performance** — wall time on long recordings is ~1.5× what
-  the fastest existing renderers manage. Rasterization is single-threaded
-  and unprofiled; frame-level parallelism is the obvious first win.
+- **Raw-render performance** — largely done: rasterization now fans out
+  across worker threads while the encoder consumes in order, palette passes
+  use an open-addressed color map instead of SipHash, WebM holds stills at
+  ~5fps instead of re-encoding every CFR tick, and the hot pixel loops work
+  row-wise (4-5× wall-time on the example session for both GIF and WebM).
+  Remaining: a single-pass exact-palette GIF (the two-pass rung still
+  renders twice), and the CRT template's per-frame f32 blur buffers.
 - **Exact-palette hit rate** — glyph antialiasing alone generates hundreds of
   fg→bg blend shades, so the lossless 256-color GIF path fires less often
   than designed. Fix: quantize AA ramps to a fixed number of levels per color

@@ -5,7 +5,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use reel_cast::{Cast, EventKind, ReelMeta};
 use reel_encode::{GifOptions, PaletteMode, RgbaFrame, WebmOptions};
 use reel_format::{parse_budget, ReelConfig, ReelFile, TimeExpr};
-use reel_render::{pixmap_to_rgba, plan_with, settings_from_config, Renderer};
+use reel_render::{pixmap_to_rgba, plan_frames, settings_from_config, Renderer};
 use reel_term::Snapshot;
 use reel_timeline::{AudioOp, Timeline, VisualOp};
 use std::path::{Path, PathBuf};
@@ -17,6 +17,8 @@ struct Loaded {
     timeline: Timeline,
     visuals: Vec<VisualOp>,
     audio_ops: Vec<AudioOp>,
+    /// Full marker table (cast + `marker` ops), label → source time.
+    markers: Vec<(String, f64)>,
     base_dir: PathBuf,
     cast_path: PathBuf,
 }
@@ -85,7 +87,7 @@ fn load_with_source(
     // their repaints; the demo shouldn't.
     reel_term::smooth_typing(&mut snapshots, &printable_keys(&cast, &cast_path));
 
-    let program = file.resolve(cast.duration())?;
+    let program = file.resolve_with(cast.duration(), &cast_markers(&cast))?;
     let (timeline, warnings) = Timeline::compile(&program.edits, cast.duration())?;
     if !quiet {
         for w in &warnings {
@@ -93,10 +95,12 @@ fn load_with_source(
         }
     }
     // Redactions run before anything renders, and cover .txt dumps too.
+    let mut redactors = Vec::new();
     for pattern in &program.redactions {
         let re = regex_lite::Regex::new(pattern)
             .map_err(|e| anyhow!("redact `{pattern}`: {e}"))?;
         reel_term::redact::apply(&mut snapshots, &re);
+        redactors.push(re);
     }
     if !quiet {
         for (kind, sample) in reel_term::redact::scan_sensitive(&snapshots, 4) {
@@ -106,9 +110,71 @@ fn load_with_source(
         }
     }
 
-    let visuals = program.visuals;
+    let mut visuals = program.visuals;
+    visuals.extend(key_overlay_visuals(&cast, &cast_path, &program.key_windows, &redactors));
     let audio_ops = program.audio;
-    Ok(Loaded { file, cast, snapshots, timeline, visuals, audio_ops, base_dir, cast_path })
+    let markers = program.markers;
+    Ok(Loaded { file, cast, snapshots, timeline, visuals, audio_ops, markers, base_dir, cast_path })
+}
+
+/// Markers recorded in the cast ("m" events). Unlabeled ones get their
+/// 1-based ordinal as the label, so they read as `@1`, `@2`, …
+fn cast_markers(cast: &Cast) -> Vec<(String, f64)> {
+    cast.events
+        .iter()
+        .filter(|e| e.kind == EventKind::Marker)
+        .enumerate()
+        .map(|(i, e)| {
+            let label = e.data.trim();
+            let label =
+                if label.is_empty() { (i + 1).to_string() } else { label.to_string() };
+            (label, e.time)
+        })
+        .collect()
+}
+
+/// One `VisualOp::Key` per keystroke chip inside a `keys` window, from the
+/// recorded input (sidecar or cast "i" events). Redaction patterns apply to
+/// chip labels too — a typed secret must not resurface in the overlay.
+fn key_overlay_visuals(
+    cast: &Cast,
+    cast_path: &Path,
+    windows: &[(f64, f64)],
+    redactors: &[regex_lite::Regex],
+) -> Vec<VisualOp> {
+    if windows.is_empty() {
+        return Vec::new();
+    }
+    raw_inputs(cast, cast_path)
+        .into_iter()
+        .filter(|(t, _)| windows.iter().any(|&(a, b)| *t >= a - 1e-9 && *t <= b + 1e-9))
+        .flat_map(|(t, value)| {
+            reel_term::keys::chips(&value)
+                .into_iter()
+                .map(move |label| VisualOp::Key { label: mask_label(label, redactors), at: t })
+        })
+        .collect()
+}
+
+/// Masks every redaction match inside a chip label with the same `•` the
+/// grid uses.
+fn mask_label(label: String, redactors: &[regex_lite::Regex]) -> String {
+    let mut s = label;
+    for re in redactors {
+        if !re.is_match(&s) {
+            continue;
+        }
+        let mut out = String::with_capacity(s.len());
+        let mut last = 0;
+        for m in re.find_iter(&s) {
+            out.push_str(&s[last..m.start()]);
+            out.extend(std::iter::repeat('•').take(s[m.start()..m.end()].chars().count()));
+            last = m.end();
+        }
+        out.push_str(&s[last..]);
+        s = out;
+    }
+    s
 }
 
 /// Renders each planned frame into the renderer's reused buffer and hands
@@ -126,6 +192,67 @@ fn render_each(
     Ok(())
 }
 
+/// Like [`render_each`], rasterizing on worker threads while the (serial)
+/// encoder consumes frames in order on this thread. Frames are independent,
+/// so worker `k` renders frames `k, k+N, k+2N…` with its own `Renderer`;
+/// bounded channels plus recycled buffers keep only a few frames in flight,
+/// preserving the flat-memory property of the streaming design.
+///
+/// `renderer` must already carry the settings to render with (fit_exact
+/// applied); it is only used directly when the job is too small to be worth
+/// spinning up workers.
+fn render_each_parallel(
+    renderer: &mut Renderer,
+    plans: &[reel_render::FramePlan],
+    snapshots: &[Snapshot],
+    mut sink: impl FnMut(&[u8], u32, u32, f64) -> Result<()>,
+) -> Result<()> {
+    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(8);
+    if workers < 2 || plans.len() < 32 {
+        return render_each(renderer, plans, snapshots, sink);
+    }
+    let settings = renderer.settings.clone();
+
+    std::thread::scope(|scope| -> Result<()> {
+        let mut frame_rx = Vec::with_capacity(workers);
+        let mut recycle_tx = Vec::with_capacity(workers);
+        for k in 0..workers {
+            let (ftx, frx) = std::sync::mpsc::sync_channel::<(Vec<u8>, u32, u32)>(1);
+            let (rtx, rrx) = std::sync::mpsc::channel::<Vec<u8>>();
+            for _ in 0..2 {
+                let _ = rtx.send(Vec::new());
+            }
+            let settings = settings.clone();
+            scope.spawn(move || {
+                // Errors surface on the main thread as a closed channel.
+                let Ok((mut r, _)) = Renderer::new(settings) else { return };
+                let mut i = k;
+                while i < plans.len() {
+                    let f = &plans[i];
+                    let (w, h, rgba) = r.render_frame_rgba(&snapshots[f.snapshot], f);
+                    let Ok(mut buf) = rrx.recv() else { return };
+                    buf.clear();
+                    buf.extend_from_slice(rgba);
+                    if ftx.send((buf, w, h)).is_err() {
+                        return; // main thread bailed
+                    }
+                    i += workers;
+                }
+            });
+            frame_rx.push(frx);
+            recycle_tx.push(rtx);
+        }
+        for (i, f) in plans.iter().enumerate() {
+            let (buf, w, h) = frame_rx[i % workers]
+                .recv()
+                .map_err(|_| anyhow!("render worker failed"))?;
+            sink(&buf, w, h, f.dur)?;
+            let _ = recycle_tx[i % workers].send(buf);
+        }
+        Ok(())
+    })
+}
+
 fn uniform_dims(snaps: &[Snapshot]) -> bool {
     snaps.windows(2).all(|w| w[0].cols == w[1].cols && w[0].rows == w[1].rows)
 }
@@ -133,11 +260,11 @@ fn uniform_dims(snaps: &[Snapshot]) -> bool {
 fn render_frames(loaded: &Loaded, cfg: &ReelConfig, quiet: bool) -> Result<(Vec<RgbaFrame>, Vec<String>)> {
     let (settings, mut warnings) = settings_from_config(cfg)?;
     let fps = settings.fps;
-    let settings_cursor_blink = settings.cursor_blink;
+    let plan_opts = settings.plan_options();
     let (mut renderer, font_warnings) = Renderer::new(settings)?;
     renderer.fit_exact(loaded.cast.cols(), loaded.cast.rows());
     warnings.extend(font_warnings);
-    let frames = plan_with(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps, settings_cursor_blink);
+    let frames = plan_frames(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps, &plan_opts);
     if !quiet {
         eprintln!(
             "rendering {} frames ({:.1}s output from {:.1}s recording)…",
@@ -265,13 +392,13 @@ fn render_apng(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
     }
     let (settings, warns) = settings_from_config(&cfg)?;
     let fps = settings.fps;
-    let blink = settings.cursor_blink;
+    let plan_opts = settings.plan_options();
     let (mut renderer, font_warns) = Renderer::new(settings)?;
     renderer.fit_exact(loaded.cast.cols(), loaded.cast.rows());
     print_warnings(&warns, quiet);
     print_warnings(&font_warns, quiet);
 
-    let plans = plan_with(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps, blink);
+    let plans = plan_frames(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps, &plan_opts);
     if !quiet {
         eprintln!(
             "rendering {} frames ({:.1}s output from {:.1}s recording)…",
@@ -290,7 +417,7 @@ fn render_apng(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
             plans.len() as u32,
             cfg.output.looping,
         )?;
-        render_each(&mut renderer, &plans, &loaded.snapshots, |rgba, _, _, dur| {
+        render_each_parallel(&mut renderer, &plans, &loaded.snapshots, |rgba, _, _, dur| {
             stream.push(rgba, dur).map_err(Into::into)
         })?;
         stream.finish()?
@@ -398,9 +525,10 @@ fn build_audio(
     Ok(Some(samples))
 }
 
-/// Printable keypresses for typing reconstruction, in source time.
-fn printable_keys(cast: &Cast, cast_path: &Path) -> Vec<reel_term::KeyPress> {
-    let raw: Vec<(f64, String)> = match ReelMeta::load_sidecar(cast_path) {
+/// Raw input events in source time: the `.reelmeta` sidecar when `reel
+/// record` wrote one, else any "i" events an asciinema recording kept.
+fn raw_inputs(cast: &Cast, cast_path: &Path) -> Vec<(f64, String)> {
+    match ReelMeta::load_sidecar(cast_path) {
         Some(meta) if !meta.input_events.is_empty() => meta
             .input_events
             .into_iter()
@@ -413,7 +541,12 @@ fn printable_keys(cast: &Cast, cast_path: &Path) -> Vec<reel_term::KeyPress> {
             .filter(|e| e.kind == EventKind::Input)
             .map(|e| (e.time, e.data.clone()))
             .collect(),
-    };
+    }
+}
+
+/// Printable keypresses for typing reconstruction, in source time.
+fn printable_keys(cast: &Cast, cast_path: &Path) -> Vec<reel_term::KeyPress> {
+    let raw = raw_inputs(cast, cast_path);
     raw.iter()
         .flat_map(|(t, v)| {
             v.chars()
@@ -522,7 +655,7 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
         step_cfg.output.scale = *scale;
         let (settings, warns) = settings_from_config(&step_cfg)?;
         let fps_used = settings.fps;
-        let blink = settings.cursor_blink;
+        let plan_opts = settings.plan_options();
         // One renderer across rungs keeps the glyph cache warm.
         let font_warns = match renderer.as_mut() {
             Some(r) => r.set_settings(settings)?,
@@ -538,7 +671,7 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
         }
         let r = renderer.as_mut().unwrap();
         r.fit_exact(loaded.cast.cols(), loaded.cast.rows());
-        let plans = plan_with(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps_used, blink);
+        let plans = plan_frames(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps_used, &plan_opts);
         if i == 0 && !quiet {
             eprintln!(
                 "rendering {} frames ({:.1}s output from {:.1}s recording)…",
@@ -554,7 +687,7 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
             ch,
             &WebmOptions { cq_level: *cq, cfr_fps: Some(*fps), ..Default::default() },
         )?;
-        render_each(r, &plans, &loaded.snapshots, |rgba, w, h, dur| {
+        render_each_parallel(r, &plans, &loaded.snapshots, |rgba, w, h, dur| {
             encoder.push(rgba, w, h, dur).map_err(Into::into)
         })?;
         let cues: Vec<reel_encode::webm::Cue> = if cfg.output.subtitles {
@@ -622,10 +755,10 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
 
     if !quiet {
         if let Ok((settings, _)) = settings_from_config(&cfg) {
-            let gradient =
-                matches!(settings.template.canvas, reel_render::template::CanvasBg::Linear { .. });
+            use reel_render::template::CanvasBg;
+            let gradient = !matches!(settings.template.canvas, CanvasBg::Solid(_));
             if gradient || settings.template.crt.is_some() {
-                let why = if gradient { "a gradient canvas" } else { "glow effects" };
+                let why = if gradient { "a gradient or image canvas" } else { "glow effects" };
                 eprintln!(
                     "note: template `{}` uses {why}, which pushes GIF output past \
                      the lossless 256-color palette — sizes grow and colors quantize. \
@@ -670,7 +803,7 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
         step_cfg.output.scale = *scale;
         let (settings, warns) = settings_from_config(&step_cfg)?;
         let fps_used = settings.fps;
-        let blink = settings.cursor_blink;
+        let plan_opts = settings.plan_options();
         let font_warns = match renderer.as_mut() {
             Some(r) => r.set_settings(settings)?,
             None => {
@@ -685,7 +818,7 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
         }
         let r = renderer.as_mut().unwrap();
         r.fit_exact(loaded.cast.cols(), loaded.cast.rows());
-        let plans = plan_with(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps_used, blink);
+        let plans = plan_frames(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps_used, &plan_opts);
         if i == 0 && !quiet {
             eprintln!(
                 "rendering {} frames ({:.1}s output from {:.1}s recording)…",
@@ -696,7 +829,7 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
         }
 
         let mut builder = reel_encode::GifPaletteBuilder::new(*colors);
-        render_each(r, &plans, &loaded.snapshots, |rgba, _, _, _| {
+        render_each_parallel(r, &plans, &loaded.snapshots, |rgba, _, _, _| {
             builder.feed(rgba);
             Ok(())
         })?;
@@ -710,7 +843,7 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
                 builder.finish(),
                 step_cfg.output.looping,
             )?;
-            render_each(r, &plans, &loaded.snapshots, |rgba, _, _, dur| {
+            render_each_parallel(r, &plans, &loaded.snapshots, |rgba, _, _, dur| {
                 stream.push(rgba, dur).map_err(Into::into)
             })?;
             stream.finish()?
@@ -761,17 +894,25 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
 
 pub fn shot(path: &Path, at: &str, out: Option<PathBuf>, template: Option<String>) -> Result<()> {
     let loaded = load(path, template, true)?;
-    let t = TimeExpr::parse(at)
-        .map_err(|e| anyhow!("--at: {e}"))?
-        .resolve(loaded.timeline.out_duration());
+    let expr = TimeExpr::parse(at).map_err(|e| anyhow!("--at: {e}"))?;
+    // `--at` is output time, except markers, which live in source time.
+    let t = match &expr {
+        TimeExpr::Marker(_) => {
+            let src = expr
+                .resolve_in(loaded.cast.duration(), &loaded.markers)
+                .map_err(|e| anyhow!("--at: {e} (see `reel inspect` for the marker list)"))?;
+            loaded.timeline.project_snapped(src)
+        }
+        _ => expr.resolve(loaded.timeline.out_duration()),
+    };
 
     let cfg = loaded.file.config.clone();
     let (settings, _) = settings_from_config(&cfg)?;
     let fps = settings.fps;
-    let settings_cursor_blink = settings.cursor_blink;
+    let plan_opts = settings.plan_options();
     let (mut renderer, _) = Renderer::new(settings)?;
     renderer.fit_exact(loaded.cast.cols(), loaded.cast.rows());
-    let frames = plan_with(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps, settings_cursor_blink);
+    let frames = plan_frames(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps, &plan_opts);
     let frame = frames
         .iter()
         .rev()
@@ -818,29 +959,25 @@ pub fn inspect(path: &Path) -> Result<()> {
         }
     }
 
-    let markers: Vec<_> = loaded
-        .visuals
-        .iter()
-        .filter_map(|v| match v {
-            VisualOp::Marker { label, at } => Some((label, at)),
-            _ => None,
-        })
-        .collect();
-    if !markers.is_empty() {
+    if !loaded.markers.is_empty() {
         println!("\nmarkers:");
-        for (label, at) in markers {
+        for (label, at) in &loaded.markers {
             let out_t = loaded.timeline.project_snapped(*at);
-            println!("  {:>7.2}s  {} (source {:.2}s)", out_t, label, at);
+            println!("  {:>7.2}s  @{} (source {:.2}s)", out_t, label, at);
         }
     }
 
     let overlays = loaded
         .visuals
         .iter()
-        .filter(|v| !matches!(v, VisualOp::Marker { .. }))
+        .filter(|v| !matches!(v, VisualOp::Key { .. }))
         .count();
     if overlays > 0 {
         println!("\noverlays  {overlays} (zoom/pan/caption/highlight)");
+    }
+    let keys = loaded.visuals.iter().filter(|v| matches!(v, VisualOp::Key { .. })).count();
+    if keys > 0 {
+        println!("keys      {keys} keystroke chips overlaid");
     }
     Ok(())
 }
@@ -880,12 +1017,19 @@ pub fn render_for_watch(
     }
     let (_, _, cast, snapshots) = cache.cast.as_ref().unwrap();
 
-    let program = file.resolve(cast.duration())?;
+    let program = file.resolve_with(cast.duration(), &cast_markers(cast))?;
     let (timeline, _) = Timeline::compile(&program.edits, cast.duration())?;
+    let redactors: Vec<regex_lite::Regex> = program
+        .redactions
+        .iter()
+        .filter_map(|p| regex_lite::Regex::new(p).ok())
+        .collect();
+    let mut visuals = program.visuals;
+    visuals.extend(key_overlay_visuals(cast, &cast_path, &program.key_windows, &redactors));
 
     let (settings, _) = settings_from_config(&file.config)?;
     let fps = settings.fps;
-    let watch_blink = settings.cursor_blink;
+    let plan_opts = settings.plan_options();
     match cache.renderer.as_mut() {
         Some(r) => {
             r.set_settings(settings)?;
@@ -894,7 +1038,7 @@ pub fn render_for_watch(
     }
     let renderer = cache.renderer.as_mut().unwrap();
 
-    let frames = plan_with(&timeline, snapshots, &program.visuals, fps, watch_blink);
+    let frames = plan_frames(&timeline, snapshots, &visuals, fps, &plan_opts);
     let mut rgba = Vec::with_capacity(frames.len());
     for f in &frames {
         let pix = renderer.render_frame(&snapshots[f.snapshot], f);
@@ -965,5 +1109,22 @@ pub fn human_size(bytes: u64) -> String {
         format!("{:.2}MB", bytes as f64 / 1_000_000.0)
     } else {
         format!("{:.1}KB", bytes as f64 / 1_000.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chip_labels_get_redacted() {
+        let res = vec![regex_lite::Regex::new("sk-live-[A-Za-z0-9]+").unwrap()];
+        assert_eq!(
+            mask_label("export KEY=sk-live-a1b2".into(), &res),
+            "export KEY=••••••••••••"
+        );
+        assert_eq!(mask_label("cargo test".into(), &res), "cargo test");
+        // Untruncated masking even when the label was truncated upstream.
+        assert_eq!(mask_label("sk-live-a1".into(), &res), "••••••••••");
     }
 }

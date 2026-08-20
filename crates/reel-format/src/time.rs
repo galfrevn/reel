@@ -1,18 +1,27 @@
 //! Time syntax: `3s`, `1200ms`, `1:24` (mm:ss), `7` (seconds), `end`,
-//! `end-2s`.
+//! `end-2s`, `@marker` (a label dropped while recording or defined with a
+//! `marker` op).
 
-/// A timestamp that may reference the end of the recording, resolved once the
-/// cast duration is known.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// A timestamp that may reference the end of the recording or a named
+/// marker, resolved once the cast is known.
+#[derive(Debug, Clone, PartialEq)]
 pub enum TimeExpr {
     Abs(f64),
     /// `end` minus an offset in seconds (`end` itself is offset 0).
     FromEnd(f64),
+    /// `@label`: a marker's source time (from the cast or a `marker` op).
+    Marker(String),
 }
 
 impl TimeExpr {
     pub fn parse(s: &str) -> Result<Self, String> {
         let s = s.trim();
+        if let Some(name) = s.strip_prefix('@') {
+            if name.is_empty() {
+                return Err("expected a marker name after `@` (like `@1` or `@intro`)".into());
+            }
+            return Ok(TimeExpr::Marker(name.to_string()));
+        }
         if let Some(rest) = s.strip_prefix("end") {
             let rest = rest.trim();
             if rest.is_empty() {
@@ -26,11 +35,24 @@ impl TimeExpr {
         Ok(TimeExpr::Abs(parse_duration(s)?))
     }
 
-    pub fn resolve(&self, duration: f64) -> f64 {
-        match *self {
-            TimeExpr::Abs(t) => t,
-            TimeExpr::FromEnd(off) => (duration - off).max(0.0),
+    /// Resolves against the recording duration and a marker table
+    /// (label → source time). Errors on a marker reference not in the table.
+    pub fn resolve_in(&self, duration: f64, markers: &[(String, f64)]) -> Result<f64, String> {
+        match self {
+            TimeExpr::Abs(t) => Ok(*t),
+            TimeExpr::FromEnd(off) => Ok((duration - off).max(0.0)),
+            TimeExpr::Marker(name) => markers
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, t)| *t)
+                .ok_or_else(|| format!("unknown marker `@{name}`")),
         }
+    }
+
+    /// Marker-free resolution, for contexts with no recording in hand.
+    /// Callers that may see `@marker` must use [`resolve_in`](Self::resolve_in).
+    pub fn resolve(&self, duration: f64) -> f64 {
+        self.resolve_in(duration, &[]).unwrap_or(0.0)
     }
 }
 
@@ -63,4 +85,21 @@ pub fn parse_duration(s: &str) -> Result<f64, String> {
     }
     s.parse::<f64>()
         .map_err(|_| format!("bad time `{s}` (expected 3s, 1200ms, 1:24, or seconds)"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marker_refs_parse_and_resolve() {
+        assert_eq!(TimeExpr::parse("@intro"), Ok(TimeExpr::Marker("intro".into())));
+        assert_eq!(TimeExpr::parse("@1"), Ok(TimeExpr::Marker("1".into())));
+        assert!(TimeExpr::parse("@").is_err());
+
+        let markers = vec![("intro".to_string(), 4.5)];
+        let te = TimeExpr::parse("@intro").unwrap();
+        assert_eq!(te.resolve_in(100.0, &markers), Ok(4.5));
+        assert!(te.resolve_in(100.0, &[]).is_err());
+    }
 }

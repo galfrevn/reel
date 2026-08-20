@@ -1,25 +1,23 @@
 schema = 1
 name = "pop"
-description = "A round bubble pop — toggles, pickups, tiny wins"
-gain = 0.5
+description = "A tiny bubble pop — hover, select, small UI responses"
+gain = 0.45
 
-# The bubble: a fast downward sine blip.
 [[layers]]
 kind = "tone"
 attack = 0.002
-decay = 0.09
-peak = 0.09
+decay = 0.05
+peak = 0.16
 waveform = "sine"
-frequency = 900
-glide_to = 380
-glide_time = 0.06
+frequency = 320
+glide_to = 880
+glide_time = 0.04
 
-# A tiny airy transient on top so the pop reads as percussive.
 [[layers]]
 kind = "noise"
 attack = 0.001
 decay = 0.015
-peak = 0.05
+peak = 0.04
 filter = "bandpass"
-frequency = 2800
-q = 1.5
+frequency = 1600
+q = 2.0

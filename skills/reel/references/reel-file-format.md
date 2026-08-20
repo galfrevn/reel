@@ -71,10 +71,91 @@ Layering order (later wins): built-in defaults → template → `[style]`
 overrides → CLI flags (`--template`, `--budget`, `--scale`, `--aspect`,
 `--size`, `--no-audio`, `-o`).
 
+## Template TOML (schema 2)
+
+A template file is the complete visual identity. Every field is optional
+(unset fields inherit `minimal`'s neutral defaults; decorations are opt-in),
+and `reel template show <name>` prints any template in this format:
+
+```toml
+schema      = 2
+name        = "frost"
+description = "Frosted glass over a wallpaper"
+theme       = "tokyo-night"   # name, or an inline [theme] table (fg/bg/cursor/ansi)
+font        = "Geist Mono"
+font_size   = 17.0
+line_height = 1.45
+window      = "macos"          # macos | rounded | plain | none
+titlebar    = "traffic-lights" # none | traffic-lights | dots
+title       = "~/app — zsh"    # text centered in the titlebar
+corner_radius = 14.0
+padding     = 28.0
+inset       = 48.0
+border      = "#ffffff12"
+window_opacity = 0.85          # < 1 = glassmorphism
+window_blur    = 14.0          # backdrop blur behind the window (px)
+
+[canvas]                       # exactly one of solid | gradient | image
+grain = 0.05                   # film grain 0..1, composes with any kind
+[canvas.gradient]
+kind  = "linear"               # linear | radial
+angle = 135.0
+from  = "#1a1a2e"              # two-stop shorthand…
+to    = "#16213e"
+# stops = [["#1a1a2e", 0.0], ["#302b63", 0.6], ["#16213e", 1.0]]  # …or multi-stop
+# [canvas.image]               # wallpaper instead (PNG/JPEG, relative to this TOML)
+# path = "bg.jpg"
+# fit  = "cover"               # cover | contain | tile
+# dim  = 0.35                  # darken for text contrast
+# blur = 8.0
+
+[shadow]
+blur = 42.0
+opacity = 0.45
+offset_y = 14.0
+
+[crt]                          # scanline/phosphor post-fx
+scanline = 0.22
+glow     = 0.55
+vignette = 0.28
+
+[cursor]
+style = "beam"                 # block | beam | underline (forces the shape)
+color = "#ff9e64"
+
+[badge]                        # corner watermark: text and/or image = "logo.png"
+text     = "made with reel"
+position = "bottom-right"      # top-left | top-right | bottom-left | bottom-right
+opacity  = 0.55
+
+[prompt]                       # injected by `reel run` into the shell it spawns
+symbol = "▲"
+color  = "#ffffff"
+path   = "short"               # none | short | full
+
+[motion]                       # off by default (they add frames)
+cursor_slide = true            # cursor slides between cells, Neovide-style
+slide_ms     = 90.0
+typing_glow  = 0.5             # freshly typed cells glow and decay, 0..1
+```
+
+`[prompt]` only affects `reel run` — reel launches that shell itself, so
+bare `bash`/`zsh` start without rc files and the branded prompt survives.
+`reel record` keeps your real prompt; recordings are never rewritten.
+Image canvases and badge logos work locally (`template add` copies the
+files next to the installed TOML) but are not publishable to the registry,
+which stores single TOML files.
+
 ## Time syntax
 
 Anywhere a time or duration appears: `3s`, `1200ms`, `1:24` (mm:ss), `end`,
-`end-2s`. Ranges are written `A..B`, e.g. `2s..end`, `19s..23s`.
+`end-2s`, `@marker`. Ranges are written `A..B`, e.g. `2s..end`, `19s..23s`,
+`@1..@done`.
+
+`@name` references a **marker**: either dropped live during `reel record` by
+pressing `Ctrl+]` (auto-labeled `@1`, `@2`, … in order), or defined in the
+file with `marker "name" at T`. `reel inspect` lists every marker with its
+time. An unknown `@name` fails with the list of known markers.
 
 **All timestamps refer to the source clock** — the recording's own timeline
 before any edits. A `caption ... at 40s` stays attached to the same moment of
@@ -104,7 +185,13 @@ each other; `trim` must lie inside the recording. Errors name the line number.
 | `pan` | `pan to (col,row) from A to B` | Move the zoom viewport while zoomed |
 | `caption` | `caption "text" at T for DUR [pos=bottom\|top\|center]` | Styled text overlay (default `pos=bottom`) |
 | `highlight` | `highlight (col,row,w,h) at T for DUR` | Dim everything except the rect |
-| `marker` | `marker "label" at T` | No-op annotation, shown by `reel inspect` |
+| `marker` | `marker "label" at T` | Name a moment; reference it as `@label` in any time |
+| `keys` | `keys on` or `keys A..B` | Show recorded keystrokes as chips (screenkey-style) |
+
+`keys` reads the `.reelmeta` sidecar (or the cast's "i" events): typed runs
+group into one chip (`cargo test`), special keys get symbols (`⏎` `⇥` `⌫`
+`↑` `^C` …), and each chip lingers ~1.2 s. Chips whose footage is cut or
+trimmed away disappear with it. Terminal query responses are filtered out.
 
 Zoom coordinates are **grid cells** (column, row), not pixels — they survive
 font-size and template changes. Text is re-rasterized at the zoomed size, so
@@ -171,11 +258,12 @@ the payoff, and a resting frame before the loop.
 
 ```sh
 reel record  [-o session.cast] [--size 220x54] -- CMD   # live capture + .reelmeta sidecar
+                                       # Ctrl+] while recording drops a marker (@1, @2, …)
 reel render  FILE [-o OUT] [--template T] [--budget 800kb] [--scale N]
              [--aspect 16:9] [--size 1920x1080] [--no-audio] [-q]
 reel run     FILE [--no-render] [-q]   # script mode: capture + render in one step
 reel watch   FILE [--serve [PORT]]     # re-render on save; browser preview at 127.0.0.1:4171
-reel shot    FILE --at 12s [-o out.png]  # single frame PNG
+reel shot    FILE --at 12s [-o out.png]  # single frame PNG (--at @marker works too)
 reel inspect FILE                      # duration, ops summary, markers, size estimate
 reel suggest CAST [--write demo.reel]  # draft the edit script from a recording
 reel init [TEMPLATE] [-o demo.reel]    # scaffold a .reel file
