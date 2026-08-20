@@ -49,13 +49,6 @@ The dependency direction follows that order; upstream crates never know
 about downstream ones. In particular, nothing in capture (`reel-cast`,
 `record` in the CLI) may depend on rendering, and vice versa.
 
-## Demo assets
-
-The GIFs embedded in the README live in `assets/demos/` and are committed
-(they're the exception to the `*.gif` ignore rule in `.gitignore`). They were
-rendered with reel itself; if a change affects visual output, re-render and
-recommit them so the README shows current behavior.
-
 ## CI and releases
 
 - `.github/workflows/ci.yml` — build + test on Linux, macOS, and Windows

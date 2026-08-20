@@ -6,24 +6,6 @@ Record a terminal session once, then treat it as a timeline you can cut,
 speed-ramp, zoom, caption, restyle, and score with sound — re-rendering in
 milliseconds without ever re-running the underlying program.
 
-![reel rendering its own demo](assets/demos/hero.gif)
-
-## The pitch, in one edit
-
-42 seconds of raw agent session…
-
-![raw agent session](assets/demos/agent-before.gif)
-
-…become 22 that tell a story — the thinking pause compressed 9×, the diff
-zoomed, the tests sped up, a chime on green:
-
-![edited agent demo](assets/demos/agent-after.gif)
-
-And because every edit is a re-render of the frozen recording, restyling is
-free — the same session on the `crt` template:
-
-![crt template](assets/demos/crt.gif)
-
 ## Install
 
 ```sh
