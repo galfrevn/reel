@@ -1,5 +1,6 @@
 mod pipeline;
 mod record;
+mod suggest;
 mod templates;
 mod themes;
 mod watch;
@@ -87,6 +88,17 @@ enum Command {
     },
     /// Summarize a .reel file: timeline, markers, size estimate
     Inspect { file: PathBuf },
+    /// Analyze a recording and draft the edit script (trims, speed ramps)
+    Suggest {
+        /// A .cast recording
+        file: PathBuf,
+        /// Write a complete .reel file instead of printing the ops
+        #[arg(long, value_name = "FILE.reel")]
+        write: Option<PathBuf>,
+        /// Template for the written file
+        #[arg(long, default_value = "glass")]
+        template: String,
+    },
     /// Scaffold a new .reel file
     Init {
         /// Template to reference (minimal, glass, classic, paper)
@@ -163,6 +175,9 @@ fn run() -> Result<()> {
         Command::Record { out, size, command } => record::record(&out, size, command),
         Command::Shot { file, at, out, template } => pipeline::shot(&file, &at, out, template),
         Command::Inspect { file } => pipeline::inspect(&file),
+        Command::Suggest { file, write, template } => {
+            suggest::suggest(&file, write.as_deref(), &template)
+        }
         Command::Init { template, out } => init(&template, &out),
         Command::Templates | Command::Template { action: TemplateAction::List } => {
             templates::list();
