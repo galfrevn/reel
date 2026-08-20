@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1536 1536" width="1536" height="1536">
+  <rect x="0" y="0" width="1536" height="1536" fill="#7C77AB"/>
+  <path fill="#F6F0E3" d="
+    M 110 1560
+    L 110 730
+    C 110 470 220 370 380 370
+    C 540 370 620 500 620 730
+    L 620 1130
+    C 780 1190 970 1210 1610 1210
+    L 1610 1560
+    Z"/>
+  <circle cx="1060" cy="880" r="560" fill="#37325F"/>
+  <path fill="none" stroke="#F6F0E3" stroke-width="92" stroke-linecap="round" d="
+    M 1060 440
+    A 440 440 0 0 0 620 880
+    A 440 440 0 0 0 1060 1320
+    A 300 300 0 0 0 1360 1020
+    A 240 240 0 0 0 1120 780"/>
+  <!-- reel hub -->
+  <circle cx="1075" cy="930" r="80" fill="#F6F0E3"/>
+  <!-- terminal block-cursor eyes -->
+  <rect x="230" y="530" width="86" height="140" rx="32" fill="#37325F"/>
+  <rect x="415" y="530" width="86" height="140" rx="32" fill="#37325F"/>
+</svg>
