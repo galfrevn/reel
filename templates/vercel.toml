@@ -1,0 +1,24 @@
+schema = 2
+name = "vercel"
+description = "Black on black, hairline chrome, the ▲ prompt — deploy-announcement minimalism"
+font = "Geist Mono Medium"
+theme = "geist-dark"
+window = "rounded"
+titlebar = "dots"
+titlebar_rule = true
+corner_radius = 12.0
+padding = 30.0
+inset = 72.0
+border = "#ffffff2e"
+
+[canvas]
+solid = "#000000"
+
+[cursor]
+style = "block"
+color = "#ededed"
+
+[prompt]
+symbol = "▲"
+color = "#ededed"
+path = "short"

@@ -103,6 +103,16 @@
           ]
         },
         {
+          "name": "vercel",
+          "description": "Black on black, hairline chrome, the ▲ prompt — deploy-announcement minimalism",
+          "tags": [
+            "dark",
+            "minimal",
+            "black",
+            "deploy"
+          ]
+        },
+        {
           "name": "glacier",
           "description": "Icy pale-blue light mode — crisp and cold for daylight docs",
           "tags": [
