@@ -1,0 +1,37 @@
+schema = 2
+name = "ember"
+description = "Everything burns red — grainy black-and-crimson monochrome for dramatic reveals"
+font = "Geist Mono Medium"
+window = "macos"
+titlebar = "traffic-lights"
+corner_radius = 14.0
+padding = 28.0
+inset = 60.0
+border = "#ff5c5c26"
+
+[canvas]
+grain = 0.16
+
+[canvas.gradient]
+kind = "radial"
+stops = [["#3d0d0d", 0.0], ["#1c0505", 0.6], ["#070202", 1.0]]
+
+[shadow]
+blur = 40.0
+opacity = 0.55
+offset_y = 12.0
+
+[motion]
+typing_glow = 0.35
+
+[theme]
+name = "ember"
+fg = "#f2e6e3"
+bg = "#0d0505"
+cursor = "#ff4d4d"
+ansi = [
+    "#241010", "#ff5f5f", "#ff8f6b", "#ffb36b",
+    "#e07070", "#ff7a9e", "#ff9d9d", "#e6cfc9",
+    "#6b3a3a", "#ff8585", "#ffa98c", "#ffc98c",
+    "#ef9090", "#ff9db8", "#ffbcbc", "#fff2ee",
+]

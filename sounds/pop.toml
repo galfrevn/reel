@@ -1,0 +1,23 @@
+schema = 1
+name = "pop"
+description = "A tiny bubble pop — hover, select, small UI responses"
+gain = 0.45
+
+[[layers]]
+kind = "tone"
+attack = 0.002
+decay = 0.05
+peak = 0.16
+waveform = "sine"
+frequency = 320
+glide_to = 880
+glide_time = 0.04
+
+[[layers]]
+kind = "noise"
+attack = 0.001
+decay = 0.015
+peak = 0.04
+filter = "bandpass"
+frequency = 1600
+q = 2.0

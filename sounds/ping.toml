@@ -1,0 +1,27 @@
+schema = 1
+name = "ping"
+description = "One clean glassy ping with a whisper of air — notifications, arrivals"
+gain = 0.45
+
+[[layers]]
+kind = "tone"
+attack = 0.002
+decay = 0.5
+peak = 0.1
+waveform = "sine"
+frequency = 1567.98
+
+[[layers]]
+kind = "tone"
+attack = 0.002
+decay = 0.35
+peak = 0.05
+waveform = "sine"
+frequency = 1567.98
+detune = 6
+
+[shimmer]
+delay = 0.09
+feedback = 0.25
+wet = 0.18
+lowpass = 6500

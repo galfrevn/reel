@@ -1,0 +1,30 @@
+schema = 2
+name = "graphite"
+description = "Charcoal card on charcoal — muted pastel syntax, quiet enough for serious docs"
+font = "Geist Mono Medium"
+window = "rounded"
+titlebar = "none"
+corner_radius = 12.0
+padding = 28.0
+inset = 52.0
+border = "#ffffff17"
+
+[canvas]
+solid = "#131313"
+
+[shadow]
+blur = 24.0
+opacity = 0.3
+offset_y = 6.0
+
+[theme]
+name = "graphite"
+fg = "#d8d8d3"
+bg = "#191919"
+cursor = "#b7a6f2"
+ansi = [
+    "#262626", "#d98e8e", "#7fd4c1", "#eec49a",
+    "#9db8e8", "#b7a6f2", "#8fd8d0", "#cfcfc9",
+    "#5c5c5c", "#e5a3a3", "#98e0d0", "#f4d4b0",
+    "#b3c9ef", "#c9bcf6", "#a8e3dc", "#efefe9",
+]

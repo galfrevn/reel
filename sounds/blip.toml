@@ -1,0 +1,20 @@
+schema = 1
+name = "blip"
+description = "A clean digital blip, one pixel of sound — cursor moves, focus changes"
+gain = 0.4
+
+[[layers]]
+kind = "tone"
+attack = 0.001
+decay = 0.05
+peak = 0.12
+waveform = "triangle"
+frequency = 1250
+
+[[layers]]
+kind = "tone"
+attack = 0.001
+decay = 0.03
+peak = 0.04
+waveform = "sine"
+frequency = 2500

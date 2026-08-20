@@ -1,0 +1,20 @@
+schema = 2
+name = "dusk"
+description = "Warm sunset gradient fading to plum — golden-hour glow for launch posts"
+font = "Geist Mono Medium"
+theme = "geist-dark"
+window = "macos"
+titlebar = "traffic-lights"
+corner_radius = 14.0
+padding = 28.0
+inset = 60.0
+border = "#ffffff21"
+
+[canvas.gradient]
+angle = 160.0
+stops = [["#ff9a5a", 0.0], ["#ff5e62", 0.55], ["#8f2d56", 1.0]]
+
+[shadow]
+blur = 40.0
+opacity = 0.45
+offset_y = 14.0

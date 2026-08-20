@@ -1,0 +1,21 @@
+schema = 1
+name = "tap"
+description = "A single muted key tap, felt-dampened — minimal keyboard accents"
+gain = 0.5
+
+[[layers]]
+kind = "noise"
+attack = 0.001
+decay = 0.04
+peak = 0.18
+filter = "lowpass"
+frequency = 900
+q = 0.8
+
+[[layers]]
+kind = "tone"
+attack = 0.001
+decay = 0.03
+peak = 0.08
+waveform = "sine"
+frequency = 180

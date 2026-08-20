@@ -1,0 +1,32 @@
+schema = 2
+name = "iris"
+description = "Violet on deep blue-gray with a filed-away titlebar — the editor-tab look"
+font = "Geist Mono Medium"
+window = "rounded"
+titlebar = "dots"
+titlebar_rule = true
+title = "demo"
+corner_radius = 12.0
+padding = 26.0
+inset = 56.0
+border = "#ffffff12"
+
+[canvas]
+solid = "#0f1117"
+grain = 0.04
+
+[cursor]
+style = "beam"
+color = "#a78bfa"
+
+[theme]
+name = "iris"
+fg = "#c8cdf5"
+bg = "#131620"
+cursor = "#a78bfa"
+ansi = [
+    "#1d2130", "#ef8ba8", "#6ee7a0", "#e8c890",
+    "#8ba7fa", "#a78bfa", "#89dceb", "#b6bce0",
+    "#4a4f6a", "#f5a6bd", "#8cf0b6", "#f2d9ab",
+    "#a5bbfc", "#c4b5fd", "#a5e8f2", "#e3e6fa",
+]

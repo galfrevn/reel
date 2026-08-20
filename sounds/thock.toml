@@ -1,0 +1,23 @@
+schema = 1
+name = "thock"
+description = "A deep, round key bottom-out — the satisfying low thock, very quiet"
+gain = 0.55
+
+[[layers]]
+kind = "tone"
+attack = 0.001
+decay = 0.06
+peak = 0.2
+waveform = "sine"
+frequency = 120
+glide_to = 80
+glide_time = 0.05
+
+[[layers]]
+kind = "noise"
+attack = 0.001
+decay = 0.05
+peak = 0.12
+filter = "lowpass"
+frequency = 500
+q = 0.7
