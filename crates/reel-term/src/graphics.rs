@@ -16,6 +16,11 @@ pub const SIXEL_CELL: (f32, f32) = (10.0, 20.0);
 /// Safety cap for decoded images.
 const MAX_DIM: u32 = 2048;
 
+/// Cap on buffered bytes while waiting for a sequence terminator. Comfortably
+/// above the largest legal payload (MAX_DIM² RGBA, base64) so it only fires
+/// on input that will never terminate.
+const MAX_PENDING: usize = 32 << 20;
+
 #[derive(Debug, Clone)]
 pub struct PlacedImage {
     /// Anchor cell (the cursor position when the image arrived).
@@ -80,6 +85,13 @@ impl GraphicsState {
             // Need the terminator before this sequence can be handled.
             let Some(end) = find_st(&self.pending, start) else {
                 self.pending.drain(..start);
+                // A sequence that never terminates (truncated recording, a
+                // bare ESC P probe) must not buffer the rest of the session
+                // behind it: past any plausible image payload, drop it so
+                // later output flows again instead of silently freezing.
+                if self.pending.len() > MAX_PENDING {
+                    self.pending.clear();
+                }
                 self.flush_text_clears(&pieces);
                 return pieces;
             };
@@ -491,6 +503,25 @@ mod tests {
         assert_eq!(&rgba[..4], &[0, 255, 0, 255]);
         let second_band = ((6 * w) * 4) as usize;
         assert_eq!(&rgba[second_band..second_band + 4], &[0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn unterminated_sequence_does_not_swallow_the_session_forever() {
+        let mut gs = GraphicsState::default();
+        // A bare DCS introducer with no terminator, then a session's worth
+        // of output. Once past MAX_PENDING the buffer must reset so later
+        // text reaches the emulator again.
+        gs.process(b"\x1bPq#1;2;100;0;0");
+        let chunk = vec![b'x'; 1 << 20];
+        for _ in 0..(MAX_PENDING >> 20) + 1 {
+            gs.process(&chunk);
+        }
+        assert!(gs.pending.len() <= MAX_PENDING, "pending must be bounded");
+        let pieces = gs.process(b"hello after the bad sequence");
+        assert!(
+            pieces.iter().any(|p| matches!(p, Piece::Text(t) if !t.is_empty())),
+            "text must flow again after the cap fires"
+        );
     }
 
     #[test]

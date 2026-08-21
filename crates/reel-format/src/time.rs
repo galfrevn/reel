@@ -57,13 +57,15 @@ impl TimeExpr {
 }
 
 /// A concrete span of time: `3s`, `1200ms`, `1:24`, or a bare number of
-/// seconds.
+/// seconds. Always finite and non-negative — durations feed frame counts
+/// and buffer sizes, so `hold -5s` or `hold 1e12` must fail here.
 pub fn parse_duration(s: &str) -> Result<f64, String> {
+    const MAX_S: f64 = 86_400.0;
     let s = s.trim();
     if s.is_empty() {
         return Err("empty time value".into());
     }
-    if let Some((m, sec)) = s.split_once(':') {
+    let v = if let Some((m, sec)) = s.split_once(':') {
         let m: f64 = m
             .parse()
             .map_err(|_| format!("bad minutes in `{s}` (expected mm:ss)"))?;
@@ -73,18 +75,23 @@ pub fn parse_duration(s: &str) -> Result<f64, String> {
         if !(0.0..60.0).contains(&sec) {
             return Err(format!("seconds out of range in `{s}` (expected 0-59.999)"));
         }
-        return Ok(m * 60.0 + sec);
-    }
-    if let Some(n) = s.strip_suffix("ms") {
+        m * 60.0 + sec
+    } else if let Some(n) = s.strip_suffix("ms") {
         let v: f64 = n.trim().parse().map_err(|_| format!("bad duration `{s}`"))?;
-        return Ok(v / 1000.0);
+        v / 1000.0
+    } else if let Some(n) = s.strip_suffix('s') {
+        n.trim().parse().map_err(|_| format!("bad duration `{s}`"))?
+    } else {
+        s.parse::<f64>()
+            .map_err(|_| format!("bad time `{s}` (expected 3s, 1200ms, 1:24, or seconds)"))?
+    };
+    if !v.is_finite() || v < 0.0 {
+        return Err(format!("time `{s}` must be a non-negative number"));
     }
-    if let Some(n) = s.strip_suffix('s') {
-        let v: f64 = n.trim().parse().map_err(|_| format!("bad duration `{s}`"))?;
-        return Ok(v);
+    if v > MAX_S {
+        return Err(format!("time `{s}` is longer than the 24h limit"));
     }
-    s.parse::<f64>()
-        .map_err(|_| format!("bad time `{s}` (expected 3s, 1200ms, 1:24, or seconds)"))
+    Ok(v)
 }
 
 #[cfg(test)]
@@ -101,5 +108,14 @@ mod tests {
         let te = TimeExpr::parse("@intro").unwrap();
         assert_eq!(te.resolve_in(100.0, &markers), Ok(4.5));
         assert!(te.resolve_in(100.0, &[]).is_err());
+    }
+
+    #[test]
+    fn durations_must_be_finite_non_negative_and_sane() {
+        for bad in ["-5s", "-5", "-1:30", "-200ms", "NaN", "inf", "1e12", "1e12s"] {
+            assert!(parse_duration(bad).is_err(), "`{bad}` must be rejected");
+        }
+        assert_eq!(parse_duration("0s"), Ok(0.0));
+        assert_eq!(parse_duration("1:24"), Ok(84.0));
     }
 }

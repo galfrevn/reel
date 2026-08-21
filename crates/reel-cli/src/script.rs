@@ -173,13 +173,28 @@ pub fn capture(path: &Path, file: &ReelFile, quiet: bool) -> Result<PathBuf> {
             }
             ScriptOp::Type { text } => {
                 for ch in text.chars() {
-                    send(ch.to_string().as_bytes(), &mut inputs)?;
+                    // A write error (child crashed or exited early) is a
+                    // script failure, not a `?` out of here: bubbling up
+                    // would skip kill/join/sidecar and lose the partial-
+                    // recording diagnostic below.
+                    if let Err(e) = send(ch.to_string().as_bytes(), &mut inputs) {
+                        failure =
+                            Some(format!("typing failed ({e}) — did the program exit early?"));
+                        break 'ops;
+                    }
                     std::thread::sleep(jitter(&file.config.typing));
                 }
             }
             ScriptOp::Key { key } => {
                 match key_bytes(key) {
-                    Some(bytes) => send(&bytes, &mut inputs)?,
+                    Some(bytes) => {
+                        if let Err(e) = send(&bytes, &mut inputs) {
+                            failure = Some(format!(
+                                "sending `{key}` failed ({e}) — did the program exit early?"
+                            ));
+                            break 'ops;
+                        }
+                    }
                     None => {
                         failure = Some(format!("unknown key `{key}`"));
                         break 'ops;
@@ -236,9 +251,9 @@ pub fn capture(path: &Path, file: &ReelFile, quiet: bool) -> Result<PathBuf> {
         rows,
     }
     .save_sidecar(&cast_path)?;
-    if let Ok(m) = Arc::try_unwrap(writer).map(Mutex::into_inner) {
-        m.expect("writer lock").finish()?;
-    }
+    // Flush through the lock: if any thread still holds a clone (a stuck
+    // reader), try_unwrap would quietly skip the flush.
+    writer.lock().unwrap().flush()?;
 
     if let Some(why) = failure {
         bail!(

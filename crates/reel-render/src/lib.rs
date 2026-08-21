@@ -36,6 +36,8 @@ pub enum RenderError {
     BadAspect(String),
     #[error("invalid size `{0}` (try 1920x1080)")]
     BadSize(String),
+    #[error("[style] {0} = {1} is out of range (allowed {2})")]
+    BadStyle(&'static str, f64, &'static str),
 }
 
 #[derive(Debug, Clone)]
@@ -84,13 +86,24 @@ pub fn settings_from_config(cfg: &ReelConfig) -> Result<(RenderSettings, Vec<Str
     })?;
 
     let style = &cfg.style;
+    // Style numbers size the canvas; unchecked they reach Pixmap::new as an
+    // unrepresentable dimension and abort instead of erroring.
     if let Some(fs) = style.font_size {
+        if !(4.0..=200.0).contains(&fs) {
+            return Err(RenderError::BadStyle("font_size", fs as f64, "4-200"));
+        }
         tpl.font_size = fs;
     }
     if let Some(lh) = style.line_height {
+        if !(0.5..=4.0).contains(&lh) {
+            return Err(RenderError::BadStyle("line_height", lh as f64, "0.5-4"));
+        }
         tpl.line_height = lh;
     }
     if let Some(p) = style.padding {
+        if p > 1000 {
+            return Err(RenderError::BadStyle("padding", p as f64, "0-1000"));
+        }
         tpl.padding = p as f32;
     }
     if let Some(w) = &style.window {

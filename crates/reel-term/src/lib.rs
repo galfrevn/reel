@@ -306,6 +306,12 @@ pub fn replay(cast: &Cast) -> Result<Vec<Snapshot>, TermError> {
             }
             EventKind::Resize => {
                 if let Some((c, r)) = parse_resize(&ev.data) {
+                    // Resize events come from the same untrusted file as the
+                    // header and get the same cap — an unchecked 65535x65535
+                    // here allocates a multi-GB grid.
+                    if c > 1000 || r > 500 || c == 0 || r == 0 {
+                        return Err(TermError::TooLarge(c, r));
+                    }
                     term.resize(GridSize { cols: c as usize, rows: r as usize });
                 }
             }
