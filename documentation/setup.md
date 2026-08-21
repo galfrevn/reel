@@ -91,9 +91,42 @@ then reference moments by name instead of hunting for timestamps
 `keys A..B`) overlays the recorded keystrokes as screenkey-style chips —
 typed text groups into words, special keys get symbols (`⏎` `^C` `↑`).
 
-Available operations: `trim`, `cut`, `speed`, `hold`, `freeze`, `zoom`,
-`pan`, `caption`, `highlight`, `marker`, `keys`, `redact`, `sound`, `mute`,
-`volume`. The
+To *explain* a demo rather than just show it, three ops annotate the frame:
+
+```
+note      "acá pega el cache" at (34,12) from 12s for 3s   # callout on a cell
+note      "y esto falla" at (10,4) from 20s for 2s style=bubble side=up
+highlight (10,4,30,3) at 12s for 2s style=box              # or spotlight/underline
+card      "1 · Install" at 0s for 1.5s                     # a title frame…
+card      "github.com/you/thing" at end for 2s             # …or an outro
+```
+
+`note` anchors to a **grid cell** and floats a card (with a leader line) or
+a speech bubble beside it, wrapping the text and picking the roomiest side
+unless you name one. `highlight` marks a rect three ways: `spotlight` (the
+default — dim everything else), `box`, or `underline`. `card` is the one
+that isn't an overlay: it inserts output time, freezing the frame under a
+scrim in the template's canvas color.
+
+Two more live in `[style]`, both off by default:
+
+```toml
+[style]
+speed_badge = true   # chip a `▸▸ 5×` while a speed ramp plays
+progress    = true   # burn a progress bar, notched at every marker
+```
+
+Every annotation animates rather than blinking on: the leader line draws
+toward the card, the card springs into place, a `style=box` highlight
+strokes itself around the rect, the badge slides in with its ramp. Those
+ramps render at the full frame rate, so budget ~20 frames per annotation.
+The progress bar is quantized to 120 steps, so it can add up to ~120 frames
+to the whole video (in WebM the delta compresses to nearly nothing; in GIF
+it counts).
+
+Available operations: `trim`, `cut`, `speed`, `hold`, `card`, `freeze`,
+`zoom`, `pan`, `caption`, `highlight`, `note`, `marker`, `keys`, `redact`,
+`sound`, `mute`, `volume`. The
 complete grammar — every argument, time syntax, style overrides — lives in
 the [skill reference](../skills/reel/references/reel-file-format.md).
 

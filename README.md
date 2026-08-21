@@ -17,11 +17,12 @@ speed-ramp, zoom, caption, restyle, and score with sound — re-rendering in
 milliseconds without ever re-running the underlying program.
 
 <p align="center">
-  <img src="documentation/assets/hero.gif" alt="A terminal recording rendered by reel: glass window, keystroke chips, captions, a speed ramp over the compile wait and a zoom on the test results" />
+  <img src="documentation/assets/hero.gif" alt="A Claude Code session rendered by reel: a title card, a speech-bubble note on the typed prompt, a 4x speed ramp over the model's thinking with a speed chip, a callout and a drawn-on box around the answer, and a progress bar notched at each marker" />
 </p>
 
-<p align="center"><sub>This GIF was cut, sped up, zoomed, captioned, and rendered by reel itself
-— from <a href="documentation/assets/hero.reel">six lines of edit script</a>.</sub></p>
+<p align="center"><sub>A real Claude Code session, recorded once and then cut, annotated,
+speed-ramped and scored by reel — from <a href="documentation/assets/hero.reel">one edit
+script</a>. The WebM carries procedural sound; GIF can't.</sub></p>
 
 ## Install
 
@@ -109,6 +110,11 @@ footage before it.
 - **Timeline editing** — `trim`, `cut`, `speed`, `zoom`, `caption`,
   `highlight`, `freeze`… Press `Ctrl+]` while recording to drop markers,
   then edit by name: `cut @1..@2`.
+- **Annotation that points at things** — `note "acá pega el cache" at
+  (34,12)` floats a callout beside a *grid cell* with a leader line (or a
+  speech-bubble tail); `highlight … style=box` boxes a region instead of
+  dimming around it; `card "1 · Install" at 0s for 1.5s` inserts a title
+  frame, and `card "…" at end` an outro.
 - **Keystroke overlay** — `keys on` shows what you typed as screenkey-style
   chips, straight from the recorded input; `redact "pattern"` masks secrets
   before they ship (renders warn about emails/tokens they spot).
@@ -116,7 +122,9 @@ footage before it.
   `paper`, `crt`, `aurora` built in; bring your own as TOML or install packs
   from GitHub. Themes import from base16, Alacritty, and iTerm2.
 - **Size budgets** — `budget = "800kb"` and the encoder walks a predictable
-  degradation ladder, reporting every step.
+  degradation ladder, reporting every step. Opt-in furniture rides along:
+  `speed_badge` chips a `▸▸ 5×` over a ramp so compressed time reads as
+  deliberate, `progress` burns a marker-notched bar for looping GIFs.
 - **Sound without audio files** — keystrokes, UI cues, and agent-thinking
   beds synthesized procedurally into WebM/Opus; `speed 5x` drops key sounds
   instead of chipmunking them.
@@ -136,7 +144,7 @@ end — capture a session that actually happened, then edit the timeline.
 | Restyling | re-runs the session | pure re-render, sub-second, nothing executes |
 | Interactive or non-deterministic apps | scripted step by step | performed by hand once, then edited |
 | Pacing | authored up front (`Sleep`, typing speed) | edited after the fact: `trim`, `cut`, `speed`, `freeze` |
-| Post-production | — | `zoom`, `caption`, `highlight`, keystroke overlay, redaction |
+| Post-production | — | `zoom`, `caption`, `note`, `card`, `highlight`, keystroke overlay, redaction |
 | Scripted demos | the whole model | `reel run` covers the deterministic case too |
 | Install | `ttyd` + `ffmpeg` on `PATH` | one static binary |
 | Size control | encoder settings | `budget = "800kb"` + a printed degradation ladder |

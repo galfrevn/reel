@@ -253,12 +253,24 @@ fn render_each_parallel(
     })
 }
 
+/// Marker positions as fractions of the output duration — the notches on
+/// the progress bar. Markers live on the source clock, so one that fell
+/// inside a `cut` has no place on the bar and is dropped.
+fn progress_ticks(timeline: &Timeline, markers: &[(String, f64)]) -> Vec<f64> {
+    let dur = timeline.out_duration();
+    if dur <= 0.0 {
+        return Vec::new();
+    }
+    markers.iter().filter_map(|(_, t)| timeline.project(*t)).map(|t| t / dur).collect()
+}
+
 fn uniform_dims(snaps: &[Snapshot]) -> bool {
     snaps.windows(2).all(|w| w[0].cols == w[1].cols && w[0].rows == w[1].rows)
 }
 
 fn render_frames(loaded: &Loaded, cfg: &ReelConfig, quiet: bool) -> Result<(Vec<RgbaFrame>, Vec<String>)> {
-    let (settings, mut warnings) = settings_from_config(cfg)?;
+    let (mut settings, mut warnings) = settings_from_config(cfg)?;
+    settings.progress_ticks = progress_ticks(&loaded.timeline, &loaded.markers);
     let fps = settings.fps;
     let plan_opts = settings.plan_options();
     let (mut renderer, font_warnings) = Renderer::new(settings)?;
@@ -390,7 +402,8 @@ fn render_apng(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
     if cfg.output.budget.is_some() && !quiet {
         eprintln!("note: budget is ignored for .apng (lossless format)");
     }
-    let (settings, warns) = settings_from_config(&cfg)?;
+    let (mut settings, warns) = settings_from_config(&cfg)?;
+    settings.progress_ticks = progress_ticks(&loaded.timeline, &loaded.markers);
     let fps = settings.fps;
     let plan_opts = settings.plan_options();
     let (mut renderer, font_warns) = Renderer::new(settings)?;
@@ -653,7 +666,8 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
         let mut step_cfg = cfg.clone();
         step_cfg.output.fps = Some(*fps);
         step_cfg.output.scale = *scale;
-        let (settings, warns) = settings_from_config(&step_cfg)?;
+        let (mut settings, warns) = settings_from_config(&step_cfg)?;
+        settings.progress_ticks = progress_ticks(&loaded.timeline, &loaded.markers);
         let fps_used = settings.fps;
         let plan_opts = settings.plan_options();
         // One renderer across rungs keeps the glyph cache warm.
@@ -801,7 +815,8 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
         let mut step_cfg = cfg.clone();
         step_cfg.output.fps = Some(*fps);
         step_cfg.output.scale = *scale;
-        let (settings, warns) = settings_from_config(&step_cfg)?;
+        let (mut settings, warns) = settings_from_config(&step_cfg)?;
+        settings.progress_ticks = progress_ticks(&loaded.timeline, &loaded.markers);
         let fps_used = settings.fps;
         let plan_opts = settings.plan_options();
         let font_warns = match renderer.as_mut() {
@@ -907,7 +922,8 @@ pub fn shot(path: &Path, at: &str, out: Option<PathBuf>, template: Option<String
     };
 
     let cfg = loaded.file.config.clone();
-    let (settings, _) = settings_from_config(&cfg)?;
+    let (mut settings, _) = settings_from_config(&cfg)?;
+    settings.progress_ticks = progress_ticks(&loaded.timeline, &loaded.markers);
     let fps = settings.fps;
     let plan_opts = settings.plan_options();
     let (mut renderer, _) = Renderer::new(settings)?;
@@ -954,7 +970,21 @@ pub fn inspect(path: &Path) -> Result<()> {
                 );
             }
             reel_timeline::Segment::Still { out_start, src_at, dur } => {
-                println!("  {:>7.2}s  hold {:.2}s for {:.2}s", out_start, src_at, dur);
+                // A card is a still with words on it; name it as one.
+                let card = loaded
+                    .timeline
+                    .cards()
+                    .iter()
+                    .find(|(a, _, _)| (a - out_start).abs() < 1e-6);
+                match card {
+                    Some((_, _, text)) => println!(
+                        "  {:>7.2}s  card {:.2}s  \"{}\"",
+                        out_start, dur, text
+                    ),
+                    None => {
+                        println!("  {:>7.2}s  hold {:.2}s for {:.2}s", out_start, src_at, dur)
+                    }
+                }
             }
         }
     }
@@ -973,7 +1003,7 @@ pub fn inspect(path: &Path) -> Result<()> {
         .filter(|v| !matches!(v, VisualOp::Key { .. }))
         .count();
     if overlays > 0 {
-        println!("\noverlays  {overlays} (zoom/pan/caption/highlight)");
+        println!("\noverlays  {overlays} (zoom/pan/caption/highlight/note)");
     }
     let keys = loaded.visuals.iter().filter(|v| matches!(v, VisualOp::Key { .. })).count();
     if keys > 0 {
@@ -1027,7 +1057,8 @@ pub fn render_for_watch(
     let mut visuals = program.visuals;
     visuals.extend(key_overlay_visuals(cast, &cast_path, &program.key_windows, &redactors));
 
-    let (settings, _) = settings_from_config(&file.config)?;
+    let (mut settings, _) = settings_from_config(&file.config)?;
+    settings.progress_ticks = progress_ticks(&timeline, &program.markers);
     let fps = settings.fps;
     let plan_opts = settings.plan_options();
     match cache.renderer.as_mut() {

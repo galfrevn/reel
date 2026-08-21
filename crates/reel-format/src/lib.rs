@@ -10,7 +10,9 @@ mod time;
 
 pub use time::TimeExpr;
 
-use reel_timeline::{AudioOp, CaptionPos, EditOps, VisualOp};
+use reel_timeline::{
+    AudioOp, CaptionPos, EditOps, HighlightStyle, NoteSide, NoteStyle, VisualOp,
+};
 use serde::Deserialize;
 
 #[derive(Debug, thiserror::Error)]
@@ -151,6 +153,11 @@ pub struct StyleCfg {
     pub padding: Option<u32>,
     /// Blink the cursor during long stills (like a real terminal). Default on.
     pub cursor_blink: Option<bool>,
+    /// Show a `▸▸ 5×` chip while a speed ramp is playing. Default off.
+    pub speed_badge: Option<bool>,
+    /// Burn a progress bar (with a notch per marker) into the frame.
+    /// Default off — it costs frames, see the docs.
+    pub progress: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -238,7 +245,18 @@ pub enum RawOp {
     Zoom { factor: f64, center: (u16, u16), range: Option<(TimeExpr, TimeExpr)> },
     Pan { to: (u16, u16), range: (TimeExpr, TimeExpr) },
     Caption { text: String, at: TimeExpr, dur: f64, pos: CaptionPos },
-    Highlight { rect: (u16, u16, u16, u16), at: TimeExpr, dur: f64 },
+    Highlight { rect: (u16, u16, u16, u16), at: TimeExpr, dur: f64, style: HighlightStyle },
+    /// A callout anchored to a grid cell.
+    Note {
+        text: String,
+        anchor: (u16, u16),
+        at: TimeExpr,
+        dur: f64,
+        style: NoteStyle,
+        side: NoteSide,
+    },
+    /// A full-frame title card; inserts `dur` of output time at `at`.
+    Card { text: String, at: TimeExpr, dur: f64 },
     Marker { label: String, at: TimeExpr },
     Sound { name: String, at: TimeExpr },
     Mute { range: (TimeExpr, TimeExpr) },
@@ -395,11 +413,25 @@ impl ReelFile {
                     dur: *dur,
                     pos: *pos,
                 }),
-                RawOp::Highlight { rect, at, dur } => p.visuals.push(VisualOp::Highlight {
+                RawOp::Highlight { rect, at, dur, style } => p.visuals.push(VisualOp::Highlight {
                     rect: *rect,
                     at: res(at)?,
                     dur: *dur,
+                    style: *style,
                 }),
+                RawOp::Note { text, anchor, at, dur, style, side } => {
+                    p.visuals.push(VisualOp::Note {
+                        text: text.clone(),
+                        anchor: *anchor,
+                        at: res(at)?,
+                        dur: *dur,
+                        style: *style,
+                        side: *side,
+                    })
+                }
+                RawOp::Card { text, at, dur } => {
+                    p.edits.cards.push((res(at)?, *dur, text.clone()))
+                }
                 RawOp::Marker { .. } => {} // already folded into the table
                 RawOp::Sound { name, at } => {
                     p.audio.push(AudioOp::Sound { name: name.clone(), at: res(at)? })
@@ -668,6 +700,31 @@ impl<'a> Args<'a> {
     fn peek_word(&self) -> Option<&str> {
         self.toks.get(self.pos).and_then(|t| t.word())
     }
+
+    /// An optional trailing `key=value` flag, consumed only when the key
+    /// matches. Order between flags doesn't matter.
+    fn flag(&mut self, key: &str) -> Option<&'a str> {
+        let value = self
+            .toks
+            .get(self.pos)
+            .and_then(|t| t.word())
+            .and_then(|w| w.strip_prefix(key))
+            .and_then(|rest| rest.strip_prefix('='))?;
+        self.pos += 1;
+        Some(value)
+    }
+
+    /// Rejects a leftover `k=v` argument with a hint naming what this op
+    /// accepts, instead of the generic trailing-arguments error.
+    fn no_more_flags(&self, accepted: &str) -> Result<(), FormatError> {
+        match self.toks.get(self.pos).and_then(|t| t.word()) {
+            Some(w) if w.contains('=') => Err(err(
+                self.line,
+                format!("`{}`: unexpected argument `{w}` (accepts {accepted})", self.op),
+            )),
+            _ => Ok(()),
+        }
+    }
 }
 
 fn parse_script_op(name: &str, toks: &[Token], line: usize) -> Result<ScriptOp, FormatError> {
@@ -757,20 +814,15 @@ fn parse_op(name: &str, toks: &[Token], line: usize) -> Result<RawOp, FormatErro
             let at = a.time()?;
             a.keyword("for")?;
             let dur = a.duration()?;
-            let pos = if let Some(w) = a.peek_word().map(str::to_owned) {
-                let p = w.strip_prefix("pos=").ok_or_else(|| {
-                    err(line, format!("`caption`: unexpected argument `{w}` (did you mean `pos=bottom`?)"))
-                })?;
-                a.pos += 1;
-                match p {
-                    "bottom" => CaptionPos::Bottom,
-                    "top" => CaptionPos::Top,
-                    "center" => CaptionPos::Center,
-                    other => return Err(err(line, format!("`caption`: unknown pos `{other}`"))),
+            let pos = match a.flag("pos") {
+                Some("bottom") | None => CaptionPos::Bottom,
+                Some("top") => CaptionPos::Top,
+                Some("center") => CaptionPos::Center,
+                Some(other) => {
+                    return Err(err(line, format!("`caption`: unknown pos `{other}`")))
                 }
-            } else {
-                CaptionPos::Bottom
             };
+            a.no_more_flags("pos=bottom|top|center")?;
             RawOp::Caption { text, at, dur, pos }
         }
         "highlight" => {
@@ -785,7 +837,77 @@ fn parse_op(name: &str, toks: &[Token], line: usize) -> Result<RawOp, FormatErro
             let at = a.time()?;
             a.keyword("for")?;
             let dur = a.duration()?;
-            RawOp::Highlight { rect, at, dur }
+            let style = match a.flag("style") {
+                Some("spotlight") | None => HighlightStyle::Spotlight,
+                Some("box") => HighlightStyle::Box,
+                Some("underline") => HighlightStyle::Underline,
+                Some(other) => {
+                    return Err(err(
+                        line,
+                        format!("`highlight`: unknown style `{other}` (expected spotlight, box, or underline)"),
+                    ))
+                }
+            };
+            a.no_more_flags("style=spotlight|box|underline")?;
+            RawOp::Highlight { rect, at, dur, style }
+        }
+        "note" => {
+            let text = a.string()?;
+            a.keyword("at")?;
+            let t = a.tuple(2)?;
+            let anchor = (to_cell(t[0], line, "note col")?, to_cell(t[1], line, "note row")?);
+            a.keyword("from")?;
+            let at = a.time()?;
+            a.keyword("for")?;
+            let dur = a.duration()?;
+            // Flags in either order.
+            let mut style = None;
+            let mut side = None;
+            for _ in 0..2 {
+                if let Some(v) = a.flag("style") {
+                    style = Some(match v {
+                        "card" => NoteStyle::Card,
+                        "bubble" => NoteStyle::Bubble,
+                        other => {
+                            return Err(err(
+                                line,
+                                format!("`note`: unknown style `{other}` (expected card or bubble)"),
+                            ))
+                        }
+                    });
+                } else if let Some(v) = a.flag("side") {
+                    side = Some(match v {
+                        "auto" => NoteSide::Auto,
+                        "up" => NoteSide::Up,
+                        "down" => NoteSide::Down,
+                        "left" => NoteSide::Left,
+                        "right" => NoteSide::Right,
+                        other => {
+                            return Err(err(
+                                line,
+                                format!("`note`: unknown side `{other}` (expected auto, up, down, left, or right)"),
+                            ))
+                        }
+                    });
+                }
+            }
+            a.no_more_flags("style=card|bubble and side=auto|up|down|left|right")?;
+            RawOp::Note {
+                text,
+                anchor,
+                at,
+                dur,
+                style: style.unwrap_or_default(),
+                side: side.unwrap_or_default(),
+            }
+        }
+        "card" => {
+            let text = a.string()?;
+            a.keyword("at")?;
+            let at = a.time()?;
+            a.keyword("for")?;
+            let dur = a.duration()?;
+            RawOp::Card { text, at, dur }
         }
         "marker" => {
             let label = a.string()?;
@@ -922,6 +1044,101 @@ freeze  last 1.5s
             }
             other => panic!("wrong error: {other}"),
         }
+    }
+
+    fn edit_file(body: &str) -> ReelFile {
+        ReelFile::parse(&format!("---\n[source]\ncast = \"x.cast\"\n---\n{body}")).unwrap()
+    }
+
+    fn edit_err(body: &str) -> String {
+        match ReelFile::parse(&format!("---\n[source]\ncast = \"x.cast\"\n---\n{body}")) {
+            Err(FormatError::Script { msg, .. }) => msg,
+            other => panic!("expected a script error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn note_parses_anchor_time_and_flags() {
+        let f = edit_file(
+            "note \"acá pega el cache\" at (34,12) from 12s for 3s\n\
+             note \"y acá no\" at (2,1) from 1s for 2s side=up style=bubble\n",
+        );
+        let p = f.resolve(60.0).unwrap();
+        match &p.visuals[0] {
+            VisualOp::Note { text, anchor, at, dur, style, side } => {
+                assert_eq!(text, "acá pega el cache");
+                assert_eq!(*anchor, (34, 12));
+                assert_eq!(*at, 12.0);
+                assert_eq!(*dur, 3.0);
+                assert_eq!(*style, NoteStyle::Card, "card is the default");
+                assert_eq!(*side, NoteSide::Auto);
+            }
+            other => panic!("wrong op: {other:?}"),
+        }
+        // Flags in either order.
+        match &p.visuals[1] {
+            VisualOp::Note { style, side, .. } => {
+                assert_eq!(*style, NoteStyle::Bubble);
+                assert_eq!(*side, NoteSide::Up);
+            }
+            other => panic!("wrong op: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn note_rejects_unknown_flags() {
+        assert!(edit_err("note \"x\" at (1,1) from 1s for 1s style=blob\n").contains("blob"));
+        assert!(edit_err("note \"x\" at (1,1) from 1s for 1s side=sideways\n").contains("sideways"));
+        assert!(edit_err("note \"x\" at (1,1) from 1s for 1s wat=1\n").contains("wat=1"));
+        // The anchor is a cell tuple, not a time.
+        assert!(edit_err("note \"x\" at 1s for 1s\n").contains("note"));
+    }
+
+    #[test]
+    fn card_inserts_output_time_rather_than_an_overlay() {
+        let p = edit_file("card \"1 · Install\" at 0s for 1.5s\ncard \"fin\" at end for 2s\n")
+            .resolve(30.0)
+            .unwrap();
+        assert!(p.visuals.is_empty(), "a card is not an overlay");
+        assert_eq!(
+            p.edits.cards,
+            vec![(0.0, 1.5, "1 · Install".to_string()), (30.0, 2.0, "fin".to_string())]
+        );
+    }
+
+    #[test]
+    fn highlight_style_defaults_to_spotlight() {
+        let p = edit_file(
+            "highlight (10,4,30,3) at 12s for 2s\n\
+             highlight (10,4,30,3) at 12s for 2s style=box\n\
+             highlight (10,4,30,3) at 12s for 2s style=underline\n",
+        )
+        .resolve(30.0)
+        .unwrap();
+        let styles: Vec<HighlightStyle> = p
+            .visuals
+            .iter()
+            .filter_map(|v| match v {
+                VisualOp::Highlight { style, .. } => Some(*style),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            styles,
+            vec![HighlightStyle::Spotlight, HighlightStyle::Box, HighlightStyle::Underline]
+        );
+        assert!(edit_err("highlight (1,1,1,1) at 1s for 1s style=glow\n").contains("glow"));
+    }
+
+    #[test]
+    fn caption_pos_still_parses_after_the_flag_refactor() {
+        let p = edit_file("caption \"hi\" at 1s for 2s pos=top\n").resolve(10.0).unwrap();
+        match &p.visuals[0] {
+            VisualOp::Caption { pos, .. } => assert_eq!(*pos, CaptionPos::Top),
+            other => panic!("wrong op: {other:?}"),
+        }
+        assert!(edit_err("caption \"hi\" at 1s for 2s pos=sideways\n").contains("sideways"));
+        assert!(edit_err("caption \"hi\" at 1s for 2s post=top\n").contains("post=top"));
     }
 
     #[test]

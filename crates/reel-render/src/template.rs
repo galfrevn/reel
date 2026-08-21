@@ -179,6 +179,32 @@ pub struct Template {
     pub badge: Option<Badge>,
     pub prompt: Option<Prompt>,
     pub motion: Motion,
+    pub overlay: Overlay,
+}
+
+/// Steering for the drawn-on overlays — note cards, title cards, the speed
+/// chip, the progress bar. Every field is optional: unset ones derive from
+/// the resolved theme, so overlays match the look without a template having
+/// to restate its palette.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Overlay {
+    /// Card/chip background (default: the theme's bg, darkened).
+    pub bg: Option<Rgba>,
+    /// Card/chip text (default: the theme's fg).
+    pub fg: Option<Rgba>,
+    /// Leader lines, boxes, the progress fill (default: the cursor color).
+    pub accent: Option<Rgba>,
+    /// Corner radius in logical px (default: 8).
+    pub radius: Option<f32>,
+    /// Background opacity 0..1 (default: 0.92).
+    pub opacity: Option<f32>,
+}
+
+impl Overlay {
+    /// Everything derived from the theme — what a template that never
+    /// mentions `[overlay]` gets.
+    pub const DEFAULT: Overlay =
+        Overlay { bg: None, fg: None, accent: None, radius: None, opacity: None };
 }
 
 fn hex(s: &str) -> Rgba {
@@ -215,6 +241,7 @@ fn neutral() -> Template {
         badge: None,
         prompt: None,
         motion: Motion::OFF,
+        overlay: Overlay::DEFAULT,
     }
 }
 
@@ -401,6 +428,7 @@ struct TemplateFile {
     badge: Option<BadgeFile>,
     prompt: Option<PromptFile>,
     motion: Option<MotionFile>,
+    overlay: Option<OverlayFile>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Default)]
@@ -480,6 +508,21 @@ struct PromptFile {
     /// none | short (default) | full
     #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<String>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct OverlayFile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bg: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fg: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    accent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    radius: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    opacity: Option<f64>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Default)]
@@ -728,6 +771,20 @@ pub fn from_toml_at(
             },
         });
     }
+    if let Some(o) = f.overlay {
+        if let Some(v) = o.opacity {
+            if !(0.0..=1.0).contains(&v) {
+                return Err(format!("overlay opacity {v} out of range 0..1"));
+            }
+        }
+        t.overlay = Overlay {
+            bg: o.bg.as_deref().map(color).transpose()?,
+            fg: o.fg.as_deref().map(color).transpose()?,
+            accent: o.accent.as_deref().map(color).transpose()?,
+            radius: o.radius.map(|v| v.max(0.0) as f32),
+            opacity: o.opacity.map(|v| v as f32),
+        };
+    }
     if let Some(m) = f.motion {
         let slide_on = m.cursor_slide.unwrap_or(m.slide_ms.is_some());
         t.motion = Motion {
@@ -868,6 +925,13 @@ pub fn to_toml(t: &Template) -> String {
                 }
                 .into(),
             ),
+        }),
+        overlay: (t.overlay != Overlay::DEFAULT).then(|| OverlayFile {
+            bg: t.overlay.bg.map(hex),
+            fg: t.overlay.fg.map(hex),
+            accent: t.overlay.accent.map(hex),
+            radius: t.overlay.radius.map(clean),
+            opacity: t.overlay.opacity.map(clean),
         }),
         motion: (!t.motion.is_off()).then(|| MotionFile {
             cursor_slide: Some(t.motion.cursor_slide_ms > 0.0),

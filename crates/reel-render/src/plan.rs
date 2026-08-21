@@ -4,7 +4,9 @@
 //! clock, which is where the file-size win comes from.
 
 use reel_term::Snapshot;
-use reel_timeline::{CaptionPos, Timeline, VisualOp};
+use reel_timeline::{
+    CaptionPos, HighlightStyle, NoteSide, NoteStyle, Segment, Timeline, VisualOp,
+};
 
 /// Camera state for one frame. `zoom == 1.0` means the base view.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -24,6 +26,40 @@ pub struct CaptionDraw {
     pub pos: CaptionPos,
 }
 
+/// A highlight rect in cell coords, with its entrance state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HighlightDraw {
+    /// (col, row, w, h) in cells.
+    pub rect: (u16, u16, u16, u16),
+    pub style: HighlightStyle,
+    pub anim: Anim,
+}
+
+/// A callout anchored to a cell.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NoteDraw {
+    pub text: String,
+    /// The cell the note points at.
+    pub anchor: (u16, u16),
+    pub style: NoteStyle,
+    pub side: NoteSide,
+    pub anim: Anim,
+}
+
+/// The speed chip shown while a ramp plays.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RateBadge {
+    pub rate: f64,
+    pub anim: Anim,
+}
+
+/// A full-frame title card, drawn over the still it inserted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CardDraw {
+    pub text: String,
+    pub anim: Anim,
+}
+
 #[derive(Debug, Clone)]
 pub struct FramePlan {
     pub out_t: f64,
@@ -33,8 +69,16 @@ pub struct FramePlan {
     pub snapshot: usize,
     pub camera: Camera,
     pub captions: Vec<CaptionDraw>,
-    /// Highlight rects in cell coords (col, row, w, h).
-    pub highlights: Vec<(u16, u16, u16, u16)>,
+    /// Highlight rects in cell coords.
+    pub highlights: Vec<HighlightDraw>,
+    /// Callouts anchored to cells.
+    pub notes: Vec<NoteDraw>,
+    /// The title card covering this frame, if any.
+    pub card: Option<CardDraw>,
+    /// Playback rate to announce as a chip (None = don't, or 1x).
+    pub rate_badge: Option<RateBadge>,
+    /// Progress through the video, 0..1, quantized (None = no bar).
+    pub progress: Option<f32>,
     /// Keystroke-overlay chips currently visible, oldest first.
     pub keys: Vec<String>,
     /// Whether the cursor is drawn (false during a blink's off phase).
@@ -54,6 +98,12 @@ pub struct PlanOptions {
     pub cursor_slide_ms: f32,
     /// Typing-glow strength 0..1 (0 = off).
     pub typing_glow: f32,
+    /// Announce speed ramps with a `▸▸ 5×` chip.
+    pub speed_badge: bool,
+    /// Burn a progress bar into the frame. Where the notches go is the
+    /// renderer's business (`RenderSettings::progress_ticks`); the planner
+    /// only needs to know the bar exists, because it emits frames.
+    pub progress: bool,
 }
 
 /// A zoom/pan op projected into output time.
@@ -80,6 +130,16 @@ struct CaptionWindow {
 
 struct HighlightWindow {
     rect: (u16, u16, u16, u16),
+    style: HighlightStyle,
+    start: f64,
+    end: f64,
+}
+
+struct NoteWindow {
+    text: String,
+    anchor: (u16, u16),
+    style: NoteStyle,
+    side: NoteSide,
     start: f64,
     end: f64,
 }
@@ -91,6 +151,124 @@ struct KeyWindow {
 }
 
 const RAMP_MAX: f64 = 0.45;
+
+/// Entrance and exit durations for a note, highlight, or card, in output
+/// seconds. The entrance is the longer of the two on purpose: arriving is
+/// what the viewer watches, leaving is what they stop watching.
+const ENTER: f64 = 0.38;
+const EXIT: f64 = 0.26;
+
+/// Steps the progress bar is quantized to. A continuous bar would change on
+/// every frame and defeat the change-driven frame economy; this caps the
+/// extra frames a bar can add to the whole video.
+const PROGRESS_STEPS: usize = 120;
+
+/// Entrance/exit state of one overlay, for the renderer to transform with.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Anim {
+    /// Eased presence. Rises 0→1 with a spring overshoot (peaks ~1.07) on
+    /// the way in, eases 1→0 on the way out. Scale, offset, and draw-on
+    /// fractions all read from this.
+    pub t: f32,
+    /// Opacity, always 0..1 — a separate curve so the overshoot in `t`
+    /// never prints as a flash.
+    pub alpha: f32,
+}
+
+impl Anim {
+    /// Fully settled — what a still frame in the middle of a window gets.
+    pub const SETTLED: Anim = Anim { t: 1.0, alpha: 1.0 };
+
+    /// Whether there is anything to draw at all.
+    pub fn visible(&self) -> bool {
+        self.alpha > 0.004
+    }
+}
+
+/// Overshooting ease for the entrance — the spring feel, without a spring
+/// solver: back-out with the classic 1.70158 tension.
+fn ease_out_back(x: f32) -> f32 {
+    const C1: f32 = 1.70158;
+    const C3: f32 = C1 + 1.0;
+    let x = x.clamp(0.0, 1.0) - 1.0;
+    1.0 + C3 * x * x * x + C1 * x * x
+}
+
+fn ease_out_cubic(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    1.0 - (1.0 - x).powi(3)
+}
+
+fn ease_in_cubic(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * x
+}
+
+/// The animation state of a window at output time `t`. Values are quantized
+/// so frames that land on the same state still dedupe.
+fn anim_at(t: f64, start: f64, end: f64) -> Anim {
+    let span = end - start;
+    if span <= 1e-9 {
+        return Anim::SETTLED;
+    }
+    // A window too short for both ramps splits what it has between them.
+    let scale = (span / (ENTER + EXIT)).min(1.0);
+    let (enter, exit) = (ENTER * scale, EXIT * scale);
+    let since = t - start;
+    let until = end - t;
+
+    let q = |v: f32| (v * 128.0).round() / 128.0;
+    if since < enter {
+        let x = (since / enter) as f32;
+        Anim { t: q(ease_out_back(x)), alpha: q(ease_out_cubic(x)) }
+    } else if until < exit {
+        let x = 1.0 - (until / exit) as f32;
+        Anim { t: q(1.0 - ease_in_cubic(x)), alpha: q(1.0 - ease_in_cubic(x)) }
+    } else {
+        Anim::SETTLED
+    }
+}
+
+/// Emission times covering both ramps of a window, so the motion is drawn
+/// at the full frame rate instead of jumping between change frames.
+fn anim_ticks(start: f64, end: f64, step: f64, out: &mut Vec<f64>) {
+    let span = end - start;
+    if span <= 1e-9 {
+        return;
+    }
+    let scale = (span / (ENTER + EXIT)).min(1.0);
+    let (enter, exit) = (ENTER * scale, EXIT * scale);
+    let mut t = start;
+    while t < start + enter {
+        out.push(t);
+        t += step;
+    }
+    let mut t = end - exit;
+    while t < end {
+        out.push(t);
+        t += step;
+    }
+}
+
+/// Output-time windows where playback is not 1x, one per `Play` segment.
+/// Modelled as windows rather than sampled per frame so the chip gets the
+/// same entrance treatment as every other overlay.
+fn badge_windows(timeline: &Timeline, out_dur: f64) -> Vec<(f64, f64, f64)> {
+    let segs = timeline.segments();
+    let mut out = Vec::new();
+    for (i, seg) in segs.iter().enumerate() {
+        let Segment::Play { rate, .. } = *seg else { continue };
+        if (rate - 1.0).abs() <= 0.05 {
+            continue;
+        }
+        let start = seg.out_start();
+        let end = segs.get(i + 1).map(|n| n.out_start()).unwrap_or(out_dur);
+        if end - start > 1e-6 {
+            out.push((rate, start, end));
+        }
+    }
+    out
+}
 
 /// How long a keystroke chip stays on screen, in output seconds.
 const KEY_HOLD: f64 = 1.2;
@@ -145,6 +323,7 @@ pub fn plan_frames(
     let mut zooms: Vec<ZoomWindow> = Vec::new();
     let mut captions: Vec<CaptionWindow> = Vec::new();
     let mut highlights: Vec<HighlightWindow> = Vec::new();
+    let mut notes: Vec<NoteWindow> = Vec::new();
     let mut key_windows: Vec<KeyWindow> = Vec::new();
     for v in visuals {
         match v {
@@ -184,9 +363,27 @@ pub fn plan_frames(
                     end: (start + dur).min(out_dur),
                 });
             }
-            VisualOp::Highlight { rect, at, dur } => {
+            VisualOp::Highlight { rect, at, dur, style } => {
                 let start = timeline.project_snapped(*at);
-                highlights.push(HighlightWindow { rect: *rect, start, end: (start + dur).min(out_dur) });
+                highlights.push(HighlightWindow {
+                    rect: *rect,
+                    style: *style,
+                    start,
+                    end: (start + dur).min(out_dur),
+                });
+            }
+            VisualOp::Note { text, anchor, at, dur, style, side } => {
+                // Authored like a caption, so it snaps rather than vanishing
+                // with the footage under it.
+                let start = timeline.project_snapped(*at);
+                notes.push(NoteWindow {
+                    text: text.clone(),
+                    anchor: *anchor,
+                    style: *style,
+                    side: *side,
+                    start,
+                    end: (start + dur).min(out_dur),
+                });
             }
             VisualOp::Key { label, at } => {
                 // A key cut out of the timeline vanishes with its footage
@@ -255,10 +452,30 @@ pub fn plan_frames(
     for hl in &highlights {
         raw.push(hl.start);
         raw.push(hl.end);
+        anim_ticks(hl.start, hl.end, step, &mut raw);
+    }
+    for n in &notes {
+        raw.push(n.start);
+        raw.push(n.end);
+        anim_ticks(n.start, n.end, step, &mut raw);
+    }
+    for (start, end, _) in timeline.cards() {
+        raw.push(*start);
+        raw.push(*end);
+        anim_ticks(*start, *end, step, &mut raw);
     }
     for k in &key_windows {
         raw.push(k.start);
         raw.push(k.end);
+    }
+    let badges = if opts.speed_badge { badge_windows(timeline, out_dur) } else { Vec::new() };
+    for (_, start, end) in &badges {
+        anim_ticks(*start, *end, step, &mut raw);
+    }
+    if opts.progress && out_dur > 0.0 {
+        for i in 1..PROGRESS_STEPS {
+            raw.push(out_dur * i as f64 / PROGRESS_STEPS as f64);
+        }
     }
 
     for t in &mut raw {
@@ -300,8 +517,39 @@ pub fn plan_frames(
         let hls = highlights
             .iter()
             .filter(|h| t >= h.start - 1e-9 && t < h.end - 1e-9)
-            .map(|h| h.rect)
+            .map(|h| HighlightDraw {
+                rect: h.rect,
+                style: h.style,
+                anim: anim_at(t, h.start, h.end),
+            })
             .collect();
+        let note_draws = notes
+            .iter()
+            .filter(|n| t >= n.start - 1e-9 && t < n.end - 1e-9)
+            .map(|n| NoteDraw {
+                text: n.text.clone(),
+                anchor: n.anchor,
+                style: n.style,
+                side: n.side,
+                anim: anim_at(t, n.start, n.end),
+            })
+            .collect();
+        let card = timeline
+            .cards()
+            .iter()
+            .find(|(a, b, _)| t >= a - 1e-9 && t < b - 1e-9)
+            .map(|(a, b, text)| CardDraw {
+                text: text.clone(),
+                anim: anim_at(t, *a, *b),
+            });
+        let rate_badge = badges
+            .iter()
+            .find(|(_, a, b)| t >= a - 1e-9 && t < b - 1e-9)
+            .map(|(rate, a, b)| RateBadge { rate: *rate, anim: anim_at(t, *a, *b) });
+        let progress = (opts.progress && out_dur > 0.0).then(|| {
+            let steps = PROGRESS_STEPS as f64;
+            (((t / out_dur) * steps).floor() / steps) as f32
+        });
         let active_keys: Vec<String> = key_windows
             .iter()
             .filter(|k| t >= k.start - 1e-9 && t < k.end - 1e-9)
@@ -319,6 +567,10 @@ pub fn plan_frames(
             camera,
             captions: caps,
             highlights: hls,
+            notes: note_draws,
+            card,
+            rate_badge,
+            progress,
             keys,
             cursor_on: true,
             cursor_pos: None,
@@ -335,6 +587,10 @@ pub fn plan_frames(
             let same = last.snapshot == f.snapshot
                 && last.camera == f.camera
                 && last.highlights == f.highlights
+                && last.notes == f.notes
+                && last.card == f.card
+                && last.rate_badge == f.rate_badge
+                && last.progress == f.progress
                 && last.keys == f.keys
                 && last.captions.len() == f.captions.len()
                 && last
@@ -778,6 +1034,191 @@ mod tests {
                 "exact time {t} missing"
             );
         }
+    }
+
+    #[test]
+    fn notes_fade_in_and_out_within_their_window() {
+        let (tl, _) = Timeline::compile(&EditOps::default(), 10.0).unwrap();
+        let snaps = snapshots(&[0.0]);
+        let visuals = vec![VisualOp::Note {
+            text: "look".into(),
+            anchor: (3, 1),
+            at: 2.0,
+            dur: 2.0,
+            style: NoteStyle::Card,
+            side: NoteSide::Auto,
+        }];
+        let frames = plan(&tl, &snaps, &visuals, 30);
+        let shown: Vec<&FramePlan> = frames.iter().filter(|f| !f.notes.is_empty()).collect();
+        assert!(!shown.is_empty(), "note never drew");
+        // Confined to 2s..4s.
+        assert!(shown.iter().all(|f| f.out_t >= 2.0 - 1e-9 && f.out_t < 4.0));
+        // Ramps up from near zero and back down.
+        let alphas: Vec<f32> = shown.iter().map(|f| f.notes[0].anim.alpha).collect();
+        assert!(alphas[0] < 0.2, "no fade-in: {alphas:?}");
+        assert!(alphas.iter().cloned().fold(0.0, f32::max) > 0.99, "never opaque: {alphas:?}");
+        assert!(*alphas.last().unwrap() < 0.3, "no fade-out: {alphas:?}");
+        assert!(shown.iter().all(|f| f.notes[0].anchor == (3, 1)));
+    }
+
+    #[test]
+    fn the_entrance_overshoots_then_settles() {
+        // The spring is the whole point of the motion: `t` must pass 1 and
+        // come back, while alpha never exceeds 1.
+        let (tl, _) = Timeline::compile(&EditOps::default(), 10.0).unwrap();
+        let snaps = snapshots(&[0.0]);
+        let visuals = vec![VisualOp::Note {
+            text: "look".into(),
+            anchor: (1, 0),
+            at: 2.0,
+            dur: 3.0,
+            style: NoteStyle::Card,
+            side: NoteSide::Auto,
+        }];
+        let frames = plan(&tl, &snaps, &visuals, 60);
+        let anims: Vec<Anim> = frames
+            .iter()
+            .filter(|f| !f.notes.is_empty())
+            .map(|f| f.notes[0].anim)
+            .collect();
+        assert!(anims.len() > 20, "entrance not drawn at frame rate: {}", anims.len());
+        let peak = anims.iter().map(|a| a.t).fold(0.0, f32::max);
+        assert!(peak > 1.0, "no overshoot, peak {peak}");
+        assert!(peak < 1.2, "overshoot too violent, peak {peak}");
+        assert!(anims.iter().all(|a| a.alpha <= 1.0), "alpha overshot with t");
+        // It settles: somewhere in the middle it is exactly at rest.
+        assert!(anims.iter().any(|a| *a == Anim::SETTLED));
+    }
+
+    #[test]
+    fn a_short_window_still_gets_both_ramps() {
+        // A note shorter than ENTER + EXIT must not skip its exit.
+        let (tl, _) = Timeline::compile(&EditOps::default(), 10.0).unwrap();
+        let snaps = snapshots(&[0.0]);
+        let visuals = vec![VisualOp::Note {
+            text: "brief".into(),
+            anchor: (0, 0),
+            at: 1.0,
+            dur: 0.3,
+            style: NoteStyle::Card,
+            side: NoteSide::Auto,
+        }];
+        let frames = plan(&tl, &snaps, &visuals, 60);
+        let alphas: Vec<f32> = frames
+            .iter()
+            .filter(|f| !f.notes.is_empty())
+            .map(|f| f.notes[0].anim.alpha)
+            .collect();
+        assert!(alphas.len() > 4, "{alphas:?}");
+        assert!(alphas[0] < 0.3, "no fade-in: {alphas:?}");
+        assert!(*alphas.last().unwrap() < 0.5, "no fade-out: {alphas:?}");
+    }
+
+    #[test]
+    fn the_speed_badge_animates_with_its_segment() {
+        let ops = EditOps { speeds: vec![(5.0, 4.0, 8.0)], ..Default::default() };
+        let (tl, _) = Timeline::compile(&ops, 10.0).unwrap();
+        let times: Vec<f64> = (0..100).map(|i| i as f64 * 0.1).collect();
+        let snaps = snapshots(&times);
+        let opts = PlanOptions { speed_badge: true, ..Default::default() };
+        let frames = plan_frames(&tl, &snaps, &[], 30, &opts);
+        let shown: Vec<RateBadge> = frames.iter().filter_map(|f| f.rate_badge).collect();
+        assert!(!shown.is_empty());
+        assert!(shown.iter().all(|b| b.rate == 5.0));
+        assert!(shown[0].anim.alpha < 0.3, "chip popped instead of sliding in");
+        assert!(shown.iter().any(|b| b.anim == Anim::SETTLED));
+    }
+
+    #[test]
+    fn a_note_anchored_in_a_cut_snaps_forward() {
+        let ops = EditOps { cuts: vec![(2.0, 6.0)], ..Default::default() };
+        let (tl, _) = Timeline::compile(&ops, 10.0).unwrap();
+        let snaps = snapshots(&[0.0, 7.0]);
+        let visuals = vec![VisualOp::Note {
+            text: "x".into(),
+            anchor: (0, 0),
+            at: 4.0, // inside the cut
+            dur: 1.0,
+            style: NoteStyle::Card,
+            side: NoteSide::Auto,
+        }];
+        let frames = plan(&tl, &snaps, &visuals, 30);
+        assert!(frames.iter().any(|f| !f.notes.is_empty()), "authored note vanished with the cut");
+    }
+
+    #[test]
+    fn highlight_styles_ride_through_to_the_frame() {
+        let (tl, _) = Timeline::compile(&EditOps::default(), 6.0).unwrap();
+        let snaps = snapshots(&[0.0]);
+        let visuals = vec![VisualOp::Highlight {
+            rect: (1, 0, 2, 1),
+            at: 1.0,
+            dur: 2.0,
+            style: HighlightStyle::Box,
+        }];
+        let frames = plan(&tl, &snaps, &visuals, 30);
+        let shown: Vec<&FramePlan> = frames.iter().filter(|f| !f.highlights.is_empty()).collect();
+        assert!(!shown.is_empty());
+        assert!(shown.iter().all(|f| f.highlights[0].style == HighlightStyle::Box));
+        let alphas: Vec<f32> = shown.iter().map(|f| f.highlights[0].anim.alpha).collect();
+        assert!(alphas[0] < 0.2 && alphas.iter().cloned().fold(0.0, f32::max) > 0.99);
+    }
+
+    #[test]
+    fn a_card_covers_exactly_the_still_it_inserted() {
+        let ops = EditOps {
+            cards: vec![(5.0, 2.0, "Step 1".into())],
+            ..Default::default()
+        };
+        let (tl, _) = Timeline::compile(&ops, 10.0).unwrap();
+        let snaps = snapshots(&[0.0, 5.0]);
+        let frames = plan(&tl, &snaps, &[], 30);
+        let carded: Vec<&FramePlan> = frames.iter().filter(|f| f.card.is_some()).collect();
+        assert!(!carded.is_empty(), "card never drew");
+        assert!(
+            carded.iter().all(|f| f.out_t >= 5.0 - 1e-9 && f.out_t < 7.0),
+            "card leaked outside its still"
+        );
+        assert!(carded.iter().all(|f| f.card.as_ref().unwrap().text == "Step 1"));
+        let total: f64 = frames.iter().map(|f| f.dur).sum();
+        assert!((total - 12.0).abs() < 0.05, "total {total}");
+    }
+
+    #[test]
+    fn the_speed_badge_follows_the_segment_rate() {
+        let ops = EditOps { speeds: vec![(5.0, 4.0, 8.0)], ..Default::default() };
+        let (tl, _) = Timeline::compile(&ops, 10.0).unwrap();
+        let times: Vec<f64> = (0..100).map(|i| i as f64 * 0.1).collect();
+        let snaps = snapshots(&times);
+        let opts = PlanOptions { speed_badge: true, ..Default::default() };
+        let frames = plan_frames(&tl, &snaps, &[], 30, &opts);
+        assert!(
+            frames.iter().any(|f| f.rate_badge.is_some_and(|b| b.rate == 5.0)),
+            "no badge during the ramp"
+        );
+        // 1x stretches announce nothing.
+        assert!(frames.iter().filter(|f| f.out_t < 3.9).all(|f| f.rate_badge.is_none()));
+        // Off by default.
+        let plain = plan(&tl, &snaps, &[], 30);
+        assert!(plain.iter().all(|f| f.rate_badge.is_none()));
+    }
+
+    #[test]
+    fn the_progress_bar_costs_a_bounded_number_of_frames() {
+        let (tl, _) = Timeline::compile(&EditOps::default(), 20.0).unwrap();
+        let snaps = snapshots(&[0.0, 1.0, 2.0]);
+        let plain = plan(&tl, &snaps, &[], 30);
+        let opts = PlanOptions { progress: true, ..Default::default() };
+        let barred = plan_frames(&tl, &snaps, &[], 30, &opts);
+        assert!(barred.iter().all(|f| f.progress.is_some()));
+        let extra = barred.len() - plain.len();
+        assert!(extra <= PROGRESS_STEPS, "progress added {extra} frames");
+        // Monotonic, and it reaches the end.
+        let ps: Vec<f32> = barred.iter().map(|f| f.progress.unwrap()).collect();
+        assert!(ps.windows(2).all(|w| w[1] >= w[0]), "not monotonic: {ps:?}");
+        assert!(*ps.last().unwrap() > 0.9, "bar never filled: {:?}", ps.last());
+        // Off by default: no bar, no extra frames.
+        assert!(plain.iter().all(|f| f.progress.is_none()));
     }
 
     #[test]
