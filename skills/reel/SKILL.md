@@ -477,6 +477,9 @@ ids), add `redact "pattern"` ops before sharing the output.
   the machine lacks is fixable in seconds — install it yourself (see "When
   the look needs a font the user doesn't have") and re-render; no
   re-recording needed.
-- Outputs: `.gif`, `.webm`, `.apng`, `.png` (via `shot`), `.txt`. MP4 is
-  deliberately unsupported (licensing); offer WebM instead.
+- Outputs: `.gif`, `.webm`, `.apng`, `.png` (via `shot`), `.txt`. `.mp4` also
+  works but only when the machine has ffmpeg — reel doesn't ship an H.264
+  encoder. Default to `.webm`, which needs nothing extra; suggest `.mp4` only
+  when the user names a destination that insists on it (Safari, iOS, a
+  timeline that won't take WebM).
 - Windows support is best-effort and untested.

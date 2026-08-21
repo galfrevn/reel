@@ -1,4 +1,5 @@
 mod audio;
+mod mp4;
 mod net;
 mod packs;
 mod pipeline;
@@ -34,7 +35,7 @@ enum Command {
     Render {
         /// Path to a .reel file, or a .cast for a quick default render
         file: PathBuf,
-        /// Output file; extension picks the format (.gif, .webm, .png, .txt)
+        /// Output file; extension picks the format (.gif, .webm, .mp4, .png, .txt)
         #[arg(long, short)]
         out: Option<PathBuf>,
         /// Template override: a name (see `reel templates`) or a .toml path
@@ -52,7 +53,7 @@ enum Command {
         /// Exact canvas size like 1920x1080 (solves the font size to fit)
         #[arg(long)]
         size: Option<String>,
-        /// Render silent even if the .reel configures audio (webm only)
+        /// Render silent even if the .reel configures audio (webm/mp4 only)
         #[arg(long)]
         no_audio: bool,
         /// Suppress progress output

@@ -21,7 +21,8 @@ All sections are optional except that edit mode requires `[source]`.
 cast = "session.cast"    # path to the asciinema v2 recording, relative to the .reel file
 
 [output]
-file   = "demo.gif"      # extension picks the format: .gif, .webm, .apng, .txt (.png via `reel shot`)
+file   = "demo.gif"      # extension picks the format: .gif, .webm, .mp4, .apng, .txt (.png via `reel shot`)
+                         # .mp4 needs ffmpeg installed; every other format is built in
 loop   = true            # GIF looping (default true)
 budget = "800kb"         # optional size target, e.g. "500kb", "2mb"; encoder degrades settings to fit
 fps    = 30              # frame-rate cap; frames are emitted on grid change, not on a clock
@@ -62,7 +63,7 @@ DEMO_MODE = "1"
 delay_ms = 70            # mean delay between keys (default 70)
 jitter   = 0.35          # human variance around the mean, 0..1 (default 0.35)
 
-[audio]                  # rendered into .webm output only; ignored for .gif
+[audio]                  # rendered into .webm and .mp4 output; ignored for .gif
 enabled   = true         # optional; defaults to on when any audio key or sound op is present
 keyboard  = "mx-brown"   # mx-brown | mx-red | mx-blue | topre | laptop | typewriter | buckling-spring | none
 volume    = 0.35         # master level 0..1
@@ -249,7 +250,7 @@ for `wait_idle`; on expiry the run fails loudly with the last grid state.
 Edit ops in the same file apply to the capture afterward.
 `reel run FILE --no-render` captures only and prints the cast path.
 
-### Audio ops (heard in .webm output; silently ignored in .gif)
+### Audio ops (heard in .webm and .mp4 output; silently ignored in .gif)
 
 - `sound "name" at T` — place a one-shot (success, error, chime, sparkle,
   droplet, tick, …). An unknown name fails with the complete list of

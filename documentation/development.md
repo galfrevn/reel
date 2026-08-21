@@ -11,6 +11,10 @@ never touch); it explains most of the architecture.
   `brew install libvpx` (macOS) or `apt install libvpx-dev` (Debian/Ubuntu).
   If pkg-config can't find it, point `PKG_CONFIG_PATH` at its
   `lib/pkgconfig` directory.
+- **ffmpeg** *(optional, runtime only)* — needed for `.mp4` output and
+  nothing else; reel calls it, never links it. `brew install ffmpeg` or
+  `apt install ffmpeg`, or point `REEL_FFMPEG` at a build off `PATH`. See
+  [mp4-export.md](mp4-export.md) for why H.264 isn't ours to encode.
 
 No libvpx handy? Build everything except `.webm` output in pure Rust —
 audio synthesis included:

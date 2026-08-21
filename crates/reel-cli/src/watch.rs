@@ -122,6 +122,7 @@ fn render_once(
             p.content_type = match result.extension.as_str() {
                 "png" => "image/png",
                 "webm" => "video/webm",
+                "mp4" => "video/mp4",
                 _ => "image/gif",
             };
             p.bytes = result.bytes;

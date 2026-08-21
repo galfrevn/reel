@@ -382,11 +382,9 @@ fn dispatch_render(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: boo
         }
         "apng" => render_apng(loaded, cfg.clone(), out_path, quiet),
         "webm" => render_webm(loaded, cfg.clone(), out_path, quiet),
-        "mp4" => bail!(
-            "mp4 is deferred (H.264 licensing) — render a .webm, or use .gif for READMEs"
-        ),
+        "mp4" => render_mp4(loaded, cfg.clone(), out_path, quiet),
         other => bail!(
-            "unsupported output extension `.{other}` (use .gif, .webm, .apng, .png, or .txt)"
+            "unsupported output extension `.{other}` (use .gif, .webm, .mp4, .apng, .png, or .txt)"
         ),
     };
     if result.is_ok() && cfg.output.subtitles {
@@ -483,7 +481,7 @@ fn render_vtt(cues: &[(f64, f64, String)]) -> String {
 // ---------------------------------------------------------------------------
 
 /// Builds the mixed 48kHz mono buffer for this render, or `None` when audio
-/// is inactive. Only the WebM path calls this.
+/// is inactive. The WebM and MP4 paths call this.
 fn build_audio(
     cast: &Cast,
     cast_path: &Path,
@@ -755,6 +753,152 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
                     report.cq_level,
                     report.bitrate_kbps,
                     if report.has_audio { "opus audio" } else { "no audio" },
+                    if i > 0 { format!(" (budget ladder: {label})") } else { String::new() }
+                );
+                if let Some(b) = budget_bytes {
+                    if size > b {
+                        eprintln!(
+                            "warning: could not reach budget {} even at lowest quality",
+                            human_size(b)
+                        );
+                    }
+                }
+            }
+            return Ok(());
+        }
+        if !quiet {
+            eprintln!(
+                "budget: {} at {} exceeds {}, degrading ({})…",
+                human_size(size),
+                label,
+                human_size(budget_bytes.unwrap()),
+                ladder[i + 1].0
+            );
+        }
+    }
+    unreachable!("ladder always writes on its last rung");
+}
+
+/// Removes the staging file if the ladder bailed before renaming it.
+struct StagingFile(PathBuf);
+
+impl Drop for StagingFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// MP4 budget ladder: the same walk as WebM, over x264's CRF instead of
+/// libvpx's CQ.
+///
+/// The encoding itself is ffmpeg's job (see `mp4.rs` for why H.264 isn't
+/// ours to ship); frames still stream one at a time, straight from the
+/// renderer into its stdin.
+fn render_mp4(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -> Result<()> {
+    let ffmpeg = crate::mp4::locate().ok_or_else(crate::mp4::missing_error)?;
+    let encoder = crate::mp4::pick_encoder(&ffmpeg)?;
+
+    let budget_bytes = match &cfg.output.budget {
+        Some(b) => Some(
+            parse_budget(b).ok_or_else(|| anyhow!("invalid budget `{b}` (try 800kb or 2mb)"))?,
+        ),
+        None => None,
+    };
+    let audio = build_audio(
+        &loaded.cast,
+        &loaded.cast_path,
+        &loaded.snapshots,
+        &loaded.timeline,
+        &loaded.audio_ops,
+        &cfg,
+        quiet,
+    )?;
+    // MP4 carries captions as mov_text, the way WebM carries them as WebVTT.
+    let vtt = cfg.output.subtitles.then(|| render_vtt(&caption_cues(loaded)));
+
+    // ffmpeg writes its output file itself, so a budget ladder that aimed
+    // straight at `out_path` would leave every rejected rung sitting there
+    // in turn. Encode to a staging file and rename the winner into place.
+    let staging = crate::mp4::temp_path(out_path, "part.mp4");
+    let _cleanup = StagingFile(staging.clone());
+
+    // (label, crf, fps, scale) — CRF rungs sit where the WebM ladder's CQ
+    // rungs do perceptually, not numerically: the two scales don't line up.
+    let base_fps = cfg.output.fps.unwrap_or(60);
+    let base_scale = cfg.output.scale;
+    let ladder: Vec<(String, u32, u32, u32)> = vec![
+        ("as configured".into(), 23, base_fps, base_scale),
+        ("crf → 28".into(), 28, base_fps, base_scale),
+        (format!("scale {base_scale} → 1"), 28, base_fps, 1),
+        ("crf → 33, fps → 20".into(), 33, base_fps.min(20), 1),
+        ("crf → 38, fps → 15".into(), 38, 15, 1),
+    ];
+
+    let mut renderer: Option<Renderer> = None;
+    for (i, (label, crf, fps, scale)) in ladder.iter().enumerate() {
+        if budget_bytes.is_none() && i > 0 {
+            break;
+        }
+        let mut step_cfg = cfg.clone();
+        step_cfg.output.fps = Some(*fps);
+        step_cfg.output.scale = *scale;
+        let (mut settings, warns) = settings_from_config(&step_cfg)?;
+        settings.progress_ticks = progress_ticks(&loaded.timeline, &loaded.markers);
+        let fps_used = settings.fps;
+        let plan_opts = settings.plan_options();
+        // One renderer across rungs keeps the glyph cache warm.
+        let font_warns = match renderer.as_mut() {
+            Some(r) => r.set_settings(settings)?,
+            None => {
+                let (r, w) = Renderer::new(settings)?;
+                renderer = Some(r);
+                w
+            }
+        };
+        if i == 0 {
+            print_warnings(&warns, quiet);
+            print_warnings(&font_warns, quiet);
+        }
+        let r = renderer.as_mut().unwrap();
+        r.fit_exact(loaded.cast.cols(), loaded.cast.rows());
+        let plans = plan_frames(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps_used, &plan_opts);
+        if i == 0 && !quiet {
+            eprintln!(
+                "rendering {} frames ({:.1}s output from {:.1}s recording)…",
+                plans.len(),
+                loaded.timeline.out_duration(),
+                loaded.cast.duration()
+            );
+        }
+
+        let (cw, ch) = r.canvas_size(loaded.cast.cols(), loaded.cast.rows());
+        let opts = crate::mp4::Options {
+            crf: *crf,
+            fps: fps_used,
+            audio: audio.as_deref(),
+            vtt: vtt.as_deref(),
+        };
+        let mut enc = crate::mp4::Encoder::start(&ffmpeg, encoder, cw, ch, &staging, &opts)?;
+        render_each_parallel(r, &plans, &loaded.snapshots, |rgba, w, h, dur| {
+            enc.push(rgba, w, h, dur)
+        })?;
+        let report = enc.finish()?;
+
+        let size = std::fs::metadata(&staging).map(|m| m.len()).unwrap_or(0);
+        let fits = budget_bytes.map(|b| size <= b).unwrap_or(true);
+        if fits || i == ladder.len() - 1 {
+            std::fs::rename(&staging, out_path).with_context(|| {
+                format!("moving {} into place", out_path.display())
+            })?;
+            if !quiet {
+                eprintln!(
+                    "{}: {} — {} frames, {} {}, {}{}",
+                    out_path.display(),
+                    human_size(size),
+                    report.frames,
+                    report.encoder,
+                    report.quality,
+                    if audio.is_some() { "aac audio" } else { "no audio" },
                     if i > 0 { format!(" (budget ladder: {label})") } else { String::new() }
                 );
                 if let Some(b) = budget_bytes {
@@ -1136,6 +1280,41 @@ pub fn render_for_watch(
                 true,
             )?;
             reel_encode::encode_webm(&rgba, audio.as_deref(), &WebmOptions::default())?.bytes
+        }
+        "mp4" => {
+            // ffmpeg writes the file itself, so this arm renders first and
+            // reads back what landed — the preview server wants bytes.
+            let ffmpeg = crate::mp4::locate().ok_or_else(crate::mp4::missing_error)?;
+            let encoder = crate::mp4::pick_encoder(&ffmpeg)?;
+            let audio = build_audio(
+                cast,
+                &cast_path,
+                snapshots,
+                &timeline,
+                &program.audio,
+                &file.config,
+                true,
+            )?;
+            let first = rgba.first().ok_or_else(|| anyhow!("no frames"))?;
+            let opts = crate::mp4::Options { crf: 23, fps, audio: audio.as_deref(), vtt: None };
+            let mut enc = crate::mp4::Encoder::start(
+                &ffmpeg,
+                encoder,
+                first.width,
+                first.height,
+                &out_path,
+                &opts,
+            )?;
+            for f in &rgba {
+                enc.push(&f.data, f.width, f.height, f.duration_s)?;
+            }
+            enc.finish()?;
+            return Ok(WatchRender {
+                bytes: std::fs::read(&out_path)?,
+                out_path,
+                cast_path: cast_path.clone(),
+                extension,
+            });
         }
         _ => {
             reel_encode::encode_gif(
