@@ -159,9 +159,10 @@ pub fn settings_from_config(cfg: &ReelConfig) -> Result<(RenderSettings, Vec<Str
 }
 
 /// Everything frame-specific that changes what `raster_grid_into` paints.
-/// Snapshots are identified by index (stable within a render pass); floats
-/// are keyed by bit pattern.
-type GridKey = (usize, u32, bool, Option<(u32, u32)>);
+/// Snapshots are identified by content hash (an index would go stale when a
+/// caller renders across different snapshot sets); floats are keyed by bit
+/// pattern.
+type GridKey = (u64, u32, bool, Option<(u32, u32)>);
 
 pub struct Renderer {
     pub settings: RenderSettings,
@@ -297,13 +298,20 @@ impl Renderer {
         let s = self.settings.scale;
         let tpl = self.settings.template.clone();
         let theme = self.settings.theme.clone();
+        // The grid honors the app's OSC 10/11/12 dynamic defaults; reel's
+        // own furniture (overlays, chrome) stays on the template theme.
+        let grid_theme = if snap.default_overrides.iter().any(Option::is_some) {
+            theme.with_defaults(&snap.default_overrides)
+        } else {
+            theme.clone()
+        };
         let base_px = self.base_font_px();
         let base_m = self.raster.fonts.cell_metrics(base_px, tpl.line_height);
         let term_w = (snap.cols as f32 * base_m.cell_w).ceil() as u32;
         let term_h = (snap.rows as f32 * base_m.cell_h).ceil() as u32;
 
         let grid_style = |font_size: f32| {
-            let mut gs = GridStyle::new(&theme, font_size, tpl.line_height, frame.cursor_on);
+            let mut gs = GridStyle::new(&grid_theme, font_size, tpl.line_height, frame.cursor_on);
             gs.cursor_pos = frame.cursor_pos;
             gs.cursor_style = tpl.cursor_style;
             gs.cursor_color = tpl.cursor_color;
@@ -346,20 +354,30 @@ impl Renderer {
             crop_into(big, vx, vy, term_w, term_h, &mut self.term_scratch);
             ((vx, vy), (zm.cell_w, zm.cell_h))
         } else {
-            let key: GridKey = (
-                frame.snapshot,
-                base_px.to_bits(),
-                frame.cursor_on,
-                frame.cursor_pos.map(|(x, y)| (x.to_bits(), y.to_bits())),
-            );
-            Self::raster_grid_cached(
-                &mut self.raster,
-                &mut self.grid_cache,
-                snap,
-                &grid_style(base_px),
-                key,
-                &mut self.term_scratch,
-            );
+            if snap.images.is_empty() {
+                let key: GridKey = (
+                    snap.content_hash(),
+                    base_px.to_bits(),
+                    frame.cursor_on,
+                    frame.cursor_pos.map(|(x, y)| (x.to_bits(), y.to_bits())),
+                );
+                Self::raster_grid_cached(
+                    &mut self.raster,
+                    &mut self.grid_cache,
+                    snap,
+                    &grid_style(base_px),
+                    key,
+                    &mut self.term_scratch,
+                );
+            } else {
+                // Image contents aren't part of the hash; don't cache them.
+                raster::raster_grid_into(
+                    &mut self.raster,
+                    snap,
+                    &grid_style(base_px),
+                    &mut self.term_scratch,
+                );
+            }
             ((0, 0), (base_m.cell_w, base_m.cell_h))
         };
         let term = &mut self.term_scratch;
@@ -374,7 +392,7 @@ impl Renderer {
                     if cell.ch == ' ' || cell.ch == '\0' {
                         return None;
                     }
-                    let color = theme.resolve(cell.fg, &snap.palette_overrides);
+                    let color = grid_theme.resolve(cell.fg, &snap.palette_overrides);
                     Some((
                         c as f32 * cur_cell.0 - view_off.0 as f32,
                         r as f32 * cur_cell.1 - view_off.1 as f32,
@@ -579,7 +597,7 @@ impl Renderer {
             if l.titlebar_h > 0.0 {
                 let size = (12.5 * s).max(8.0);
                 let m = raster.fonts.cell_metrics(size, 1.0);
-                let text_w = title.chars().count() as f32 * m.cell_w;
+                let text_w = text_cells(title) * m.cell_w;
                 let x = l.win_x + (l.win_w - text_w) / 2.0;
                 let baseline = l.win_y + (l.titlebar_h - m.cell_h) / 2.0 + m.baseline;
                 let color = Rgba { a: 150, ..theme.fg };
@@ -602,7 +620,7 @@ impl Renderer {
             let text_w = badge
                 .text
                 .as_ref()
-                .map(|t| t.chars().count() as f32 * m.cell_w)
+                .map(|t| text_cells(t) * m.cell_w)
                 .unwrap_or(0.0);
             let total_w = img_w + gap + text_w;
             let total_h = if badge.image.is_some() { img_h } else { m.cell_h };
@@ -658,7 +676,7 @@ impl Renderer {
     ) {
         let size = (template_font_size * 0.95 * s).max(10.0);
         let m = raster.fonts.cell_metrics(size, 1.0);
-        let text_w: f32 = text.chars().count() as f32 * m.cell_w;
+        let text_w: f32 = text_cells(text) * m.cell_w;
         let pad_x = 14.0 * s;
         let pad_y = 8.0 * s;
         let pill_w = text_w + pad_x * 2.0;
@@ -673,14 +691,12 @@ impl Renderer {
             CaptionPos::Center => (ch - pill_h) / 2.0,
         };
 
-        raster::fill_rect(
-            canvas,
-            x as i32,
-            y as i32,
-            pill_w.ceil() as i32,
-            pill_h.ceil() as i32,
-            Rgba { r: 8, g: 8, b: 10, a: 208 },
-        );
+        // A rounded pill, like every other overlay surface — captions are
+        // the most-used annotation and shouldn't be the only sharp-cornered
+        // one on the canvas.
+        if let Some(rect) = tiny_skia::Rect::from_xywh(x, y, pill_w, pill_h) {
+            chrome::fill_rounded(canvas, rect, pill_h / 2.0, Rgba { r: 8, g: 8, b: 10, a: 208 });
+        }
         let color = Rgba::rgb(0xf2, 0xf2, 0xf5);
         let mut pen_x = x + pad_x;
         let baseline_y = y + pad_y + m.baseline;
@@ -697,7 +713,7 @@ impl Renderer {
                     }
                 }
             }
-            pen_x += m.cell_w;
+            pen_x += m.cell_w * char_cells(chr);
         }
     }
 
@@ -719,7 +735,7 @@ impl Renderer {
         let chip_h = m.cell_h + pad_y * 2.0;
         let widths: Vec<f32> = keys
             .iter()
-            .map(|k| k.chars().count() as f32 * m.cell_w + pad_x * 2.0)
+            .map(|k| text_cells(k) * m.cell_w + pad_x * 2.0)
             .collect();
         let total_w: f32 = widths.iter().sum::<f32>() + gap * (keys.len() - 1) as f32;
         let cw = canvas.width() as f32;
@@ -736,14 +752,9 @@ impl Renderer {
         let mut x = (cw - total_w) / 2.0;
         let text_color = Rgba::rgb(0xf2, 0xf2, 0xf5);
         for (key, w) in keys.iter().zip(&widths) {
-            raster::fill_rect(
-                canvas,
-                x as i32,
-                y as i32,
-                w.ceil() as i32,
-                chip_h.ceil() as i32,
-                Rgba { r: 8, g: 8, b: 10, a: 190 },
-            );
+            if let Some(rect) = tiny_skia::Rect::from_xywh(x, y, *w, chip_h) {
+                chrome::fill_rounded(canvas, rect, 4.0 * s, Rgba { r: 8, g: 8, b: 10, a: 190 });
+            }
             let mut pen_x = x + pad_x;
             let baseline_y = y + pad_y + m.baseline;
             for chr in key.chars() {
@@ -759,7 +770,7 @@ impl Renderer {
                         }
                     }
                 }
-                pen_x += m.cell_w;
+                pen_x += m.cell_w * char_cells(chr);
             }
             x += w + gap;
         }
@@ -776,6 +787,20 @@ fn canvas_scrim(tpl: &Template, theme: &Theme) -> Rgba {
         }
         template::CanvasBg::Image { .. } => theme.bg,
     }
+}
+
+/// Advance in monospace cells for one char of overlay text: emoji and
+/// East-Asian-wide chars take two cells, exactly as the grid gives them.
+/// Without this, "🚀 Deploy" in a caption overlaps its neighbor and the
+/// pill measures too narrow.
+pub(crate) fn char_cells(ch: char) -> f32 {
+    use unicode_width::UnicodeWidthChar;
+    ch.width().unwrap_or(1).max(1) as f32
+}
+
+/// Width of a line of overlay text, in monospace cells.
+pub(crate) fn text_cells(text: &str) -> f32 {
+    text.chars().map(char_cells).sum()
 }
 
 /// Draws a single line of text at a baseline; returns the advance width.
@@ -803,7 +828,7 @@ pub(crate) fn draw_text(
                 GlyphPixels::Color(rgba) => raster::blit_rgba(canvas, gx, gy, g.width, g.height, rgba),
             }
         }
-        pen += m.cell_w;
+        pen += m.cell_w * char_cells(ch);
     }
     pen - x
 }
@@ -896,6 +921,33 @@ mod tests {
             cursor_pos: None,
             glow: vec![],
         }
+    }
+
+    #[test]
+    fn wide_chars_measure_two_cells() {
+        assert_eq!(text_cells("ab"), 2.0);
+        assert_eq!(text_cells("\u{1F680}"), 2.0, "emoji is double-width");
+        assert_eq!(text_cells("\u{4F60}\u{597D}"), 4.0, "CJK is double-width");
+    }
+
+    #[test]
+    fn osc_background_reaches_the_grid() {
+        let plain = snap(r#"[0.1, "o", "hi"]"#);
+        let themed = snap(r#"[0.1, "o", "\u001b]11;rgb:ff/00/00\u0007hi"]"#);
+        let mut r = Renderer::new(settings("minimal")).unwrap().0;
+        let a = r.render_frame(&plain, &base_frame());
+        let b = r.render_frame(&themed, &base_frame());
+        assert_ne!(a.data(), b.data(), "OSC 11 background must change the render");
+    }
+
+    #[test]
+    fn undercurl_renders_differently_from_plain_underline() {
+        let plain = snap(r#"[0.1, "o", "\u001b[4mwavy\u001b[0m"]"#);
+        let curl = snap(r#"[0.1, "o", "\u001b[4:3mwavy\u001b[0m"]"#);
+        let mut r = Renderer::new(settings("minimal")).unwrap().0;
+        let a = r.render_frame(&plain, &base_frame());
+        let b = r.render_frame(&curl, &base_frame());
+        assert_ne!(a.data(), b.data());
     }
 
     #[test]

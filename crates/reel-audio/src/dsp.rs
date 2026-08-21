@@ -158,19 +158,38 @@ fn render_tone(out: &mut [f32], layer: &ToneLayer, pitch: f32) {
         if phase > 2.0 * std::f32::consts::PI {
             phase -= 2.0 * std::f32::consts::PI;
         }
+        // Square/saw take a polyBLEP correction at their discontinuities:
+        // the naive versions alias audibly once pitch scaling pushes the
+        // harmonics past Nyquist. Deterministic, like everything here.
+        let dt = freq / sr;
+        let t01 = phase / (2.0 * std::f32::consts::PI);
         let wave = match layer.waveform {
             Waveform::Sine => phase.sin(),
             Waveform::Triangle => (2.0 / std::f32::consts::PI) * phase.sin().asin(),
             Waveform::Square => {
-                if phase.sin() >= 0.0 {
-                    1.0
-                } else {
-                    -1.0
-                }
+                let raw = if t01 < 0.5 { 1.0 } else { -1.0 };
+                raw + poly_blep(t01, dt) - poly_blep((t01 + 0.5).fract(), dt)
             }
-            Waveform::Saw => (phase / std::f32::consts::PI) - 1.0,
+            Waveform::Saw => (2.0 * t01 - 1.0) - poly_blep(t01, dt),
         };
         out[idx] += wave * envelope(t, layer.attack, layer.decay, layer.peak);
+    }
+}
+
+/// Band-limiting step correction for square/saw discontinuities.
+/// `t` is the normalized phase (0..1), `dt` the per-sample phase increment.
+fn poly_blep(t: f32, dt: f32) -> f32 {
+    if dt <= 0.0 {
+        return 0.0;
+    }
+    if t < dt {
+        let x = t / dt;
+        x + x - x * x - 1.0
+    } else if t > 1.0 - dt {
+        let x = (t - 1.0) / dt;
+        x * x + x + x + 1.0
+    } else {
+        0.0
     }
 }
 

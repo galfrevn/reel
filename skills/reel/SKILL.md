@@ -378,7 +378,11 @@ with the trade-off named.
 
 One physics constraint transcends template choice: gradient backgrounds cost
 GIF palette efficiency. If a tight size budget starts visibly degrading
-quality, switch to a solid-canvas template and tell the user why.
+quality, switch to a solid-canvas template and tell the user why. When a
+gradient template's GIF shows banding rings (the palette had to quantize),
+opt into ordered dithering with `dither = true` under `[output]` — it trades
+a little grain and file size for smooth gradients; exact-palette (lossless)
+renders ignore it.
 
 ### Publishing the user's look
 

@@ -40,7 +40,9 @@ pub struct VideoTrack {
 pub struct AudioTrack {
     pub channels: u8,
     pub sample_rate: u32,
-    /// Samples the decoder must drop at the start (0 for reel's encoder).
+    /// Samples a decoder must drop before real audio. 0 is *correct* for
+    /// reel's encoder: rusty-opus has no libopus-style delay-compensation
+    /// buffer, so its packets are frame-aligned with the input.
     pub pre_skip: u16,
 }
 

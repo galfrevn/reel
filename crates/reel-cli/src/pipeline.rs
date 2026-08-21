@@ -880,7 +880,7 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
                 &mut bytes,
                 cw,
                 ch,
-                builder.finish(),
+                builder.finish().with_dither(step_cfg.output.dither),
                 step_cfg.output.looping,
             )?;
             render_each_parallel(r, &plans, &loaded.snapshots, |rgba, _, _, dur| {
@@ -1140,7 +1140,11 @@ pub fn render_for_watch(
         _ => {
             reel_encode::encode_gif(
                 &rgba,
-                &GifOptions { looping: file.config.output.looping, max_colors: 256 },
+                &GifOptions {
+                    looping: file.config.output.looping,
+                    max_colors: 256,
+                    dither: file.config.output.dither,
+                },
             )?
             .bytes
         }

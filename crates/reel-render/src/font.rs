@@ -80,6 +80,13 @@ pub struct CellMetrics {
     pub cell_h: f32,
     /// Distance from cell top to the text baseline.
     pub baseline: f32,
+    /// Underline top, from cell top — the font's own metric when it has
+    /// one, so the rule clears descenders instead of colliding with them.
+    pub underline_y: f32,
+    /// Strikeout top, from cell top.
+    pub strikeout_y: f32,
+    /// Recommended underline/strikeout thickness.
+    pub line_thickness: f32,
 }
 
 pub struct FontSet {
@@ -349,7 +356,25 @@ impl FontSet {
         let cell_h = (font_size * line_height).max(natural).round();
         // Center the natural line box inside the (usually taller) cell.
         let baseline = ((cell_h - natural) / 2.0 + m.ascent).round();
-        CellMetrics { cell_w, cell_h, baseline }
+        // Underline/strikeout from the font's own metrics (y-up, relative
+        // to the baseline: underline offsets run negative), falling back to
+        // the old heuristics for fonts that carry zeros.
+        let line_thickness = if m.stroke_size > 0.0 {
+            m.stroke_size.max(1.0)
+        } else {
+            (font_size / 14.0).max(1.0)
+        };
+        let underline_y = if m.underline_offset != 0.0 {
+            (baseline - m.underline_offset).min(cell_h - line_thickness)
+        } else {
+            baseline + (font_size * 0.11).max(1.5)
+        };
+        let strikeout_y = if m.strikeout_offset > 0.0 {
+            baseline - m.strikeout_offset
+        } else {
+            baseline - font_size * 0.3
+        };
+        CellMetrics { cell_w, cell_h, baseline, underline_y, strikeout_y, line_thickness }
     }
 
     /// The family reel actually resolved (for logs and error messages).

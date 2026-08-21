@@ -223,14 +223,10 @@ pub fn raster_grid_into(r: &mut Rasterizer, snap: &Snapshot, style: &GridStyle, 
             }
 
             let span_w = if cell.attrs.contains(CellAttrs::WIDE) { m.cell_w * 2.0 } else { m.cell_w };
-            if cell.attrs.contains(CellAttrs::UNDERLINE) {
-                let ly = (y + m.baseline + (style.font_size * 0.11).max(1.5)).round() as i32;
-                let lh = (style.font_size / 14.0).max(1.0).round() as i32;
-                fill_rect(pix, x.round() as i32, ly, span_w.round() as i32, lh, fg);
-            }
+            draw_underlines(pix, cell.attrs, x, y, span_w, &m, fg);
             if cell.attrs.contains(CellAttrs::STRIKEOUT) {
-                let ly = (y + m.baseline - style.font_size * 0.3).round() as i32;
-                let lh = (style.font_size / 14.0).max(1.0).round() as i32;
+                let ly = (y + m.strikeout_y).round() as i32;
+                let lh = m.line_thickness.round().max(1.0) as i32;
                 fill_rect(pix, x.round() as i32, ly, span_w.round() as i32, lh, fg);
             }
             let _ = bg;
@@ -314,6 +310,14 @@ fn draw_cursor(
             fill_rect(pix, x, y + h - bar, w, bar, color);
             None
         }
+        CursorShape::Hollow => {
+            let t = (cell_w * 0.12).max(1.0).round() as i32;
+            fill_rect(pix, x, y, w, t, color);
+            fill_rect(pix, x, y + h - t, w, t, color);
+            fill_rect(pix, x, y + t, t, h - 2 * t, color);
+            fill_rect(pix, x + w - t, y + t, t, h - 2 * t, color);
+            None
+        }
         CursorShape::Hidden => None,
     }
 }
@@ -325,6 +329,61 @@ fn draw_cursor(
 pub fn fill(pix: &mut Pixmap, c: Rgba) {
     let px = premul(c);
     pix.pixels_mut().fill(px);
+}
+
+/// Draws a cell's underline in its recorded style — curl, double, dotted,
+/// dashed, or plain. Pattern phase keys off the absolute x position so the
+/// wave and the dots run continuously across adjacent cells.
+fn draw_underlines(
+    pix: &mut Pixmap,
+    attrs: CellAttrs,
+    x: f32,
+    y: f32,
+    span_w: f32,
+    m: &crate::font::CellMetrics,
+    fg: Rgba,
+) {
+    const ANY: CellAttrs = CellAttrs::UNDERLINE
+        .union(CellAttrs::UNDERCURL)
+        .union(CellAttrs::DOUBLE_UNDERLINE)
+        .union(CellAttrs::DOTTED_UNDERLINE)
+        .union(CellAttrs::DASHED_UNDERLINE);
+    if !attrs.intersects(ANY) {
+        return;
+    }
+    let lh = m.line_thickness.round().max(1.0) as i32;
+    let ly = (y + m.underline_y).round() as i32;
+    let x0 = x.round() as i32;
+    let w = span_w.round() as i32;
+    if attrs.contains(CellAttrs::UNDERCURL) {
+        let amp = (m.line_thickness * 1.2).max(1.0);
+        let period = m.cell_w.max(4.0);
+        for i in 0..w {
+            let phase = ((x0 + i) as f32 / period) * std::f32::consts::TAU;
+            let yo = (phase.sin() * amp).round() as i32;
+            fill_rect(pix, x0 + i, ly + yo, 1, lh, fg);
+        }
+    } else if attrs.contains(CellAttrs::DOUBLE_UNDERLINE) {
+        fill_rect(pix, x0, ly, w, lh, fg);
+        fill_rect(pix, x0, ly + lh * 2, w, lh, fg);
+    } else if attrs.contains(CellAttrs::DOTTED_UNDERLINE) {
+        let dot = (lh * 2).max(2);
+        for i in 0..w {
+            if ((x0 + i).rem_euclid(dot * 2)) < dot {
+                fill_rect(pix, x0 + i, ly, 1, lh, fg);
+            }
+        }
+    } else if attrs.contains(CellAttrs::DASHED_UNDERLINE) {
+        let dash = ((m.cell_w / 2.0).round() as i32).max(3);
+        let gap = (dash / 2).max(2);
+        for i in 0..w {
+            if ((x0 + i).rem_euclid(dash + gap)) < dash {
+                fill_rect(pix, x0 + i, ly, 1, lh, fg);
+            }
+        }
+    } else {
+        fill_rect(pix, x0, ly, w, lh, fg);
+    }
 }
 
 pub fn fill_rect(pix: &mut Pixmap, x: i32, y: i32, w: i32, h: i32, c: Rgba) {
