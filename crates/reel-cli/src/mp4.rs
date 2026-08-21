@@ -34,10 +34,11 @@ pub fn locate() -> Option<PathBuf> {
         let p = PathBuf::from(p);
         return p.is_file().then_some(p);
     }
+    // `EXE_SUFFIX` rather than a bare "ffmpeg": on Windows the binary is
+    // ffmpeg.exe, and searching for the extensionless name finds nothing.
+    let exe = format!("ffmpeg{}", std::env::consts::EXE_SUFFIX);
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join("ffmpeg"))
-        .find(|c| c.is_file())
+    std::env::split_paths(&path).map(|dir| dir.join(&exe)).find(|c| c.is_file())
 }
 
 /// The message shown when there's no ffmpeg to render with. Spelled out
