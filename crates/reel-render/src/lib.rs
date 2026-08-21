@@ -158,11 +158,21 @@ pub fn settings_from_config(cfg: &ReelConfig) -> Result<(RenderSettings, Vec<Str
     ))
 }
 
+/// Everything frame-specific that changes what `raster_grid_into` paints.
+/// Snapshots are identified by index (stable within a render pass); floats
+/// are keyed by bit pattern.
+type GridKey = (usize, u32, bool, Option<(u32, u32)>);
+
 pub struct Renderer {
     pub settings: RenderSettings,
     raster: Rasterizer,
     /// Cached static chrome (canvas bg + shadow + window) keyed by term size.
     chrome_base: Option<((u32, u32), Pixmap)>,
+    /// Rasterized-grid cache. Stills dominate terminal demos, and the
+    /// planner multiplies them into blink phases and progress ticks that
+    /// differ only in cursor state — two entries (blink on/off) turn nearly
+    /// all of that re-rasterization into memcpys.
+    grid_cache: Vec<(GridKey, Pixmap)>,
     // Reused per-frame buffers: allocating ~25MB per frame made macOS's
     // large-alloc cache balloon multi-gigabyte on long renders.
     term_scratch: Pixmap,
@@ -184,6 +194,7 @@ impl Renderer {
                 settings,
                 raster,
                 chrome_base: None,
+                grid_cache: Vec::new(),
                 term_scratch: px(),
                 zoom_scratch: px(),
                 canvas_scratch: px(),
@@ -203,6 +214,9 @@ impl Renderer {
             .map_err(RenderError::Font)?;
         self.settings = settings;
         self.chrome_base = None;
+        // The key doesn't cover theme/template, so a settings swap must
+        // drop cached grids (watch mode also swaps snapshot sets here).
+        self.grid_cache.clear();
         Ok(warning.into_iter().collect())
     }
 
@@ -265,6 +279,20 @@ impl Renderer {
         (self.canvas_scratch.width(), self.canvas_scratch.height(), &self.rgba_scratch)
     }
 
+    /// Like [`render_frame_rgba`](Self::render_frame_rgba), converting
+    /// straight into `out` — a worker fills its recycled channel buffer
+    /// without an extra full-canvas copy in between.
+    pub fn render_frame_rgba_into(
+        &mut self,
+        snap: &Snapshot,
+        frame: &FramePlan,
+        out: &mut Vec<u8>,
+    ) -> (u32, u32) {
+        self.render_to_scratch(snap, frame);
+        pixmap_to_rgba_into(&self.canvas_scratch, out);
+        (self.canvas_scratch.width(), self.canvas_scratch.height())
+    }
+
     fn render_to_scratch(&mut self, snap: &Snapshot, frame: &FramePlan) {
         let s = self.settings.scale;
         let tpl = self.settings.template.clone();
@@ -318,10 +346,18 @@ impl Renderer {
             crop_into(big, vx, vy, term_w, term_h, &mut self.term_scratch);
             ((vx, vy), (zm.cell_w, zm.cell_h))
         } else {
-            raster::raster_grid_into(
+            let key: GridKey = (
+                frame.snapshot,
+                base_px.to_bits(),
+                frame.cursor_on,
+                frame.cursor_pos.map(|(x, y)| (x.to_bits(), y.to_bits())),
+            );
+            Self::raster_grid_cached(
                 &mut self.raster,
+                &mut self.grid_cache,
                 snap,
                 &grid_style(base_px),
+                key,
                 &mut self.term_scratch,
             );
             ((0, 0), (base_m.cell_w, base_m.cell_h))
@@ -495,6 +531,37 @@ impl Renderer {
                 &ov,
                 s,
             );
+        }
+    }
+
+    /// `raster_grid_into` behind the two-entry grid cache. On a hit the
+    /// raster is a memcpy; effects (glow, highlights, CRT) draw on the
+    /// scratch afterwards, so the cached copy stays pristine.
+    fn raster_grid_cached(
+        raster: &mut Rasterizer,
+        cache: &mut Vec<(GridKey, Pixmap)>,
+        snap: &Snapshot,
+        style: &GridStyle,
+        key: GridKey,
+        out: &mut Pixmap,
+    ) {
+        if let Some(pos) = cache.iter().position(|(k, _)| *k == key) {
+            let pix = &cache[pos].1;
+            if out.width() == pix.width() && out.height() == pix.height() {
+                out.data_mut().copy_from_slice(pix.data());
+            } else {
+                *out = pix.clone();
+            }
+            return;
+        }
+        raster::raster_grid_into(raster, snap, style, out);
+        // Bound the cache's memory: two entries, none absurdly large.
+        const MAX_CACHED_BYTES: usize = 64 << 20;
+        if out.data().len() <= MAX_CACHED_BYTES {
+            if cache.len() >= 2 {
+                cache.remove(0);
+            }
+            cache.push((key, out.clone()));
         }
     }
 

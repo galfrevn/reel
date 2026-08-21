@@ -42,30 +42,63 @@ pub fn rgba_to_i420_into(width: u32, height: u32, rgba: &[u8], out: &mut I420Fra
     out.v.resize(cw * ch, 0);
     let (y_plane, u_plane, v_plane) = (&mut out.y, &mut out.u, &mut out.v);
 
-    for cy in 0..ch {
-        for cx in 0..cw {
+    // Interior fast path: complete 2x2 windows need no clamping or
+    // in-bounds tests, which is what lets this loop vectorize — it's the
+    // largest scalar per-pixel pass on the WebM path after the render.
+    let full_cw = w / 2;
+    let full_ch = h / 2;
+    for cy in 0..full_ch {
+        let (py0, py1) = (cy * 2, cy * 2 + 1);
+        for cx in 0..full_cw {
+            let px0 = cx * 2;
             let mut sum_cb = 0i32;
             let mut sum_cr = 0i32;
-            let mut n = 0i32;
-            for dy in 0..2 {
-                let py = (cy * 2 + dy).min(h - 1);
-                for dx in 0..2 {
-                    let px = (cx * 2 + dx).min(w - 1);
-                    // Edge pixels repeat in the window; keeping the count at
-                    // the true sample number keeps the average unbiased.
-                    if (cy * 2 + dy) < h && (cx * 2 + dx) < w {
-                        let o = (py * w + px) * 4;
-                        let (r, g, b) = (rgba[o] as i32, rgba[o + 1] as i32, rgba[o + 2] as i32);
-                        let (y, cb, cr) = ycbcr(r, g, b);
-                        y_plane[py * w + px] = y;
-                        sum_cb += cb;
-                        sum_cr += cr;
-                        n += 1;
-                    }
+            for (py, px) in [(py0, px0), (py0, px0 + 1), (py1, px0), (py1, px0 + 1)] {
+                let o = (py * w + px) * 4;
+                let (r, g, b) = (rgba[o] as i32, rgba[o + 1] as i32, rgba[o + 2] as i32);
+                let (y, cb, cr) = ycbcr(r, g, b);
+                y_plane[py * w + px] = y;
+                sum_cb += cb;
+                sum_cr += cr;
+            }
+            u_plane[cy * cw + cx] = (128 + sum_cb / 4).clamp(16, 240) as u8;
+            v_plane[cy * cw + cx] = (128 + sum_cr / 4).clamp(16, 240) as u8;
+        }
+    }
+
+    // Edges (odd width/height): the clamped reference path, over the last
+    // column and row only. Edge pixels repeat in the window; keeping the
+    // count at the true sample number keeps the average unbiased.
+    let mut edge_block = |cy: usize, cx: usize| {
+        let mut sum_cb = 0i32;
+        let mut sum_cr = 0i32;
+        let mut n = 0i32;
+        for dy in 0..2 {
+            let py = (cy * 2 + dy).min(h - 1);
+            for dx in 0..2 {
+                let px = (cx * 2 + dx).min(w - 1);
+                if (cy * 2 + dy) < h && (cx * 2 + dx) < w {
+                    let o = (py * w + px) * 4;
+                    let (r, g, b) = (rgba[o] as i32, rgba[o + 1] as i32, rgba[o + 2] as i32);
+                    let (y, cb, cr) = ycbcr(r, g, b);
+                    y_plane[py * w + px] = y;
+                    sum_cb += cb;
+                    sum_cr += cr;
+                    n += 1;
                 }
             }
-            u_plane[cy * cw + cx] = (128 + sum_cb / n).clamp(16, 240) as u8;
-            v_plane[cy * cw + cx] = (128 + sum_cr / n).clamp(16, 240) as u8;
+        }
+        u_plane[cy * cw + cx] = (128 + sum_cb / n).clamp(16, 240) as u8;
+        v_plane[cy * cw + cx] = (128 + sum_cr / n).clamp(16, 240) as u8;
+    };
+    if w % 2 == 1 {
+        for cy in 0..full_ch {
+            edge_block(cy, full_cw);
+        }
+    }
+    if h % 2 == 1 {
+        for cx in 0..cw {
+            edge_block(full_ch, cx);
         }
     }
 }

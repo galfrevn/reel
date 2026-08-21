@@ -231,10 +231,10 @@ fn render_each_parallel(
                 let mut i = k;
                 while i < plans.len() {
                     let f = &plans[i];
-                    let (w, h, rgba) = r.render_frame_rgba(&snapshots[f.snapshot], f);
                     let Ok(mut buf) = rrx.recv() else { return };
-                    buf.clear();
-                    buf.extend_from_slice(rgba);
+                    // Convert straight into the recycled buffer — no
+                    // intermediate full-canvas copy.
+                    let (w, h) = r.render_frame_rgba_into(&snapshots[f.snapshot], f, &mut buf);
                     if ftx.send((buf, w, h)).is_err() {
                         return; // main thread bailed
                     }
@@ -1103,16 +1103,13 @@ pub fn render_for_watch(
     let renderer = cache.renderer.as_mut().unwrap();
 
     let frames = plan_frames(&timeline, snapshots, &visuals, fps, &plan_opts);
+    // Same parallel path as batch renders — watch is the mode whose whole
+    // promise is fast re-render, so it shouldn't be the single-threaded one.
     let mut rgba = Vec::with_capacity(frames.len());
-    for f in &frames {
-        let pix = renderer.render_frame(&snapshots[f.snapshot], f);
-        rgba.push(RgbaFrame {
-            width: pix.width(),
-            height: pix.height(),
-            data: pixmap_to_rgba(&pix),
-            duration_s: f.dur,
-        });
-    }
+    render_each_parallel(renderer, &frames, snapshots, |buf, w, h, dur| {
+        rgba.push(RgbaFrame { width: w, height: h, data: buf.to_vec(), duration_s: dur });
+        Ok(())
+    })?;
 
     let out_path = out
         .or_else(|| file.config.output.file.as_ref().map(|f| base_dir.join(f)))

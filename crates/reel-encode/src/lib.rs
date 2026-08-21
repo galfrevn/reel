@@ -135,7 +135,13 @@ impl WebmEncoder {
                         let jn = (j + hold).min(ticks.len());
                         let pts = tick_ms(ticks[j]);
                         let dur = (tick_ms(ticks[jn - 1] + 1) - pts).max(1) as u64;
-                        self.blocks.extend(self.enc.encode(&self.i420, pts, dur)?);
+                        if j == 0 {
+                            self.blocks.extend(self.enc.encode(&self.i420, pts, dur)?);
+                        } else {
+                            // Same image re-held: skip the plane copies and
+                            // the good-quality deadline.
+                            self.blocks.extend(self.enc.encode_repeat(pts, dur)?);
+                        }
                         j = jn;
                     }
                 }
@@ -456,7 +462,12 @@ impl GifPaletteBuilder {
                     self.stride *= 2;
                 }
             }
-            self.phase = (self.phase + 1) % self.stride;
+            // Countdown instead of modulo: an integer div per pixel is the
+            // hottest instruction in this whole pass.
+            self.phase += 1;
+            if self.phase >= self.stride {
+                self.phase = 0;
+            }
         }
     }
 

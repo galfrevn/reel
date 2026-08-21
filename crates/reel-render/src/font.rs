@@ -89,6 +89,10 @@ pub struct FontSet {
     primary: [FaceSlot; 4],
     /// char → face that has it, discovered lazily; None = tofu everywhere.
     char_slots: HashMap<char, Option<FaceSlot>>,
+    /// (char, variant) → resolved (face, glyph id). The uncached resolve
+    /// re-parses the font's table directory and walks its cmap — per cell,
+    /// per frame, that alone was millions of parses per minute of video.
+    glyph_memo: HashMap<(char, u8), Option<(FaceSlot, u16)>>,
     /// fontdb faces already loaded (or that failed to load), so repeated
     /// loads don't repeat work. Only *matching* faces are ever retained —
     /// candidate files are parsed temporarily and dropped, because keeping
@@ -103,8 +107,18 @@ impl FontSet {
     /// Loads the system font database and resolves the primary family.
     /// Returns the set plus a warning when `preferred` wasn't found.
     pub fn system(preferred: Option<&str>) -> Result<(Self, Option<String>), String> {
-        let mut db = fontdb::Database::new();
-        db.load_system_fonts();
+        // Scanning the installed fonts costs 100ms+ on a typical macOS; a
+        // parallel render builds one renderer per worker per pass, so the
+        // scan happens exactly once per process and workers clone the
+        // (much smaller) metadata. Project-local fonts still load fresh.
+        static SYSTEM_DB: std::sync::OnceLock<fontdb::Database> = std::sync::OnceLock::new();
+        let mut db = SYSTEM_DB
+            .get_or_init(|| {
+                let mut db = fontdb::Database::new();
+                db.load_system_fonts();
+                db
+            })
+            .clone();
         // reel's own fonts dir wins for project-local fonts (no system
         // install needed) — e.g. `~/.config/reel/fonts/GeistMono-*.ttf`.
         if let Some(dir) = crate::paths::fonts_dir() {
@@ -118,6 +132,7 @@ impl FontSet {
             faces: Vec::new(),
             primary: [0; 4],
             char_slots: HashMap::new(),
+            glyph_memo: HashMap::new(),
             scanned: HashMap::new(),
             scan_order: Vec::new(),
         };
@@ -227,6 +242,9 @@ impl FontSet {
         let italic = slot_for(self, fontdb::Weight::NORMAL, fontdb::Style::Italic);
         let bold_italic = slot_for(self, fontdb::Weight::BOLD, fontdb::Style::Italic);
         self.primary = [regular, bold, italic, bold_italic];
+        // Memoized resolutions start from the primary slots; a new primary
+        // family invalidates them all.
+        self.glyph_memo.clear();
         Ok(warning)
     }
 
@@ -260,7 +278,18 @@ impl FontSet {
 
     /// Maps a char to (face, glyph): primary variant → primary regular →
     /// already-loaded fallbacks → lazy scan of remaining installed faces.
+    /// Memoized — the resolve below re-parses font tables per call.
     pub fn glyph(&mut self, ch: char, v: Variant) -> Option<(FaceSlot, u16)> {
+        let memo_key = (ch, v as u8);
+        if let Some(&hit) = self.glyph_memo.get(&memo_key) {
+            return hit;
+        }
+        let resolved = self.glyph_uncached(ch, v);
+        self.glyph_memo.insert(memo_key, resolved);
+        resolved
+    }
+
+    fn glyph_uncached(&mut self, ch: char, v: Variant) -> Option<(FaceSlot, u16)> {
         for slot in [self.primary_slot(v), self.primary_slot(Variant::Regular)] {
             let id = self.font(slot).charmap().map(ch);
             if id != 0 {

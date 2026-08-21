@@ -135,6 +135,27 @@ impl Vp9Encoder {
         }
     }
 
+    /// Re-encodes the image already loaded by the previous [`encode`]
+    /// (Self::encode) call — the CFR hold path re-emitting an unchanged
+    /// still. Skips the plane copies and takes the realtime deadline: the
+    /// encoder sees a zero-motion duplicate, so quality is irrelevant.
+    pub fn encode_repeat(&mut self, pts_ms: i64, dur_ms: u64) -> Result<Vec<Block>, EncodeError> {
+        unsafe {
+            let rc = vpx_codec_encode(
+                &mut self.ctx,
+                &self.img,
+                pts_ms,
+                dur_ms.max(1),
+                0,
+                VPX_DL_REALTIME as u64,
+            );
+            if rc != VPX_CODEC_OK {
+                return Err(vpx_err("encode", rc));
+            }
+            Ok(self.drain())
+        }
+    }
+
     /// Flushes the encoder; call once after the last frame.
     pub fn finish(&mut self) -> Result<Vec<Block>, EncodeError> {
         unsafe {
