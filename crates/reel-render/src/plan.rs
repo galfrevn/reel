@@ -1089,7 +1089,7 @@ mod tests {
         assert!(peak < 1.2, "overshoot too violent, peak {peak}");
         assert!(anims.iter().all(|a| a.alpha <= 1.0), "alpha overshot with t");
         // It settles: somewhere in the middle it is exactly at rest.
-        assert!(anims.iter().any(|a| *a == Anim::SETTLED));
+        assert!(anims.contains(&Anim::SETTLED));
     }
 
     #[test]

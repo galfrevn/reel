@@ -400,6 +400,36 @@ mod tests {
     }
 
     #[test]
+    fn mutated_casts_never_panic() {
+        // Deterministic mutation smoke test: every byte-level corruption of
+        // a valid cast must produce Ok or Err — never a panic. (xorshift64*,
+        // seeded, so failures reproduce.)
+        let mut state = 0x9E3779B97F4A7C15u64;
+        let mut rng = move || {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state.wrapping_mul(0x2545F4914F6CDD1D)
+        };
+        let base = SAMPLE.as_bytes();
+        for _ in 0..500 {
+            let mut bytes = base.to_vec();
+            for _ in 0..(rng() % 8 + 1) {
+                let i = (rng() % bytes.len() as u64) as usize;
+                match rng() % 3 {
+                    0 => bytes[i] = (rng() >> 56) as u8,
+                    1 => {
+                        bytes.remove(i);
+                    }
+                    _ => bytes.insert(i, (rng() >> 56) as u8),
+                }
+            }
+            let text = String::from_utf8_lossy(&bytes);
+            let _ = Cast::parse(&text); // Ok or Err both fine; panic is the bug
+        }
+    }
+
+    #[test]
     fn header_extras_survive() {
         let cast = Cast::parse(r#"{"version": 2, "width": 10, "height": 5, "idle_time_limit": 2.5}"#).unwrap();
         assert!(cast.header.extra.contains_key("idle_time_limit"));

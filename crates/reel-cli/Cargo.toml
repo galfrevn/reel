@@ -29,7 +29,8 @@ clap = { version = "4", features = ["derive"] }
 notify = "8"
 portable-pty = "0.9.0"
 crossterm = "0.29.0"
-serde_yaml = "0.9"
+# Maintained fork of the archived serde_yaml (RUSTSEC-2024-0320), same API.
+serde_yaml_ng = "0.10"
 plist = "1"
 serde.workspace = true
 toml.workspace = true
@@ -38,3 +39,10 @@ indicatif = "0.18"
 base64 = "0.22"
 serde_json = { workspace = true, features = ["preserve_order"] }
 regex-lite = "0.1.9"
+
+[dev-dependencies]
+# The e2e render test decodes its own outputs with independent parsers.
+gif = "0.14"
+matroska = "0.30"
+png = "0.18"
+tempfile = "3"

@@ -173,7 +173,7 @@ impl Snapshot {
         }
         for (i, c) in self.default_overrides.iter().enumerate() {
             if let Some((r, g, b)) = c {
-                mix(0x100 + i as u64 | (*r as u64) << 8 | (*g as u64) << 16 | (*b as u64) << 24);
+                mix((0x100 + i as u64) | (*r as u64) << 8 | (*g as u64) << 16 | (*b as u64) << 24);
             }
         }
         h

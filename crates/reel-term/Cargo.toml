@@ -13,3 +13,6 @@ bitflags = "2"
 thiserror = { workspace = true }
 regex-lite = "0.1.9"
 png = "0.18.1"
+
+[dev-dependencies]
+serde_json = { workspace = true }

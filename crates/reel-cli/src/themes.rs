@@ -329,8 +329,8 @@ fn hex(s: &str) -> Result<Rgba> {
 // ---------------------------------------------------------------------------
 
 fn from_base16(text: &str, fallback_name: &str) -> Result<Theme> {
-    let map: std::collections::BTreeMap<String, serde_yaml::Value> =
-        serde_yaml::from_str(text).context("parsing YAML")?;
+    let map: std::collections::BTreeMap<String, serde_yaml_ng::Value> =
+        serde_yaml_ng::from_str(text).context("parsing YAML")?;
     // New-style schemes nest colors under `palette`; classic ones are flat.
     let flat;
     let palette = match map.get("palette").and_then(|v| v.as_mapping()) {
@@ -453,7 +453,7 @@ fn from_alacritty_toml(text: &str, name: &str) -> Result<Theme> {
 }
 
 fn from_alacritty_yaml(text: &str, name: &str) -> Result<Theme> {
-    alacritty_theme(serde_yaml::from_str(text).context("parsing YAML")?, name)
+    alacritty_theme(serde_yaml_ng::from_str(text).context("parsing YAML")?, name)
 }
 
 // ---------------------------------------------------------------------------

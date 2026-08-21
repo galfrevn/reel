@@ -170,7 +170,7 @@ fn mask_label(label: String, redactors: &[regex_lite::Regex]) -> String {
         let mut last = 0;
         for m in re.find_iter(&s) {
             out.push_str(&s[last..m.start()]);
-            out.extend(std::iter::repeat('•').take(s[m.start()..m.end()].chars().count()));
+            out.extend(std::iter::repeat_n('•', s[m.start()..m.end()].chars().count()));
             last = m.end();
         }
         out.push_str(&s[last..]);
