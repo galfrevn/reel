@@ -7,11 +7,6 @@ on:
 permissions:
   contents: write
 
-env:
-  # The libvpx reel is developed against. env-libvpx-sys requires
-  # VPX_VERSION whenever VPX_LIB_DIR is set.
-  VPX_VERSION: "1.16.0"
-
 jobs:
   # A tag on a broken commit must not ship; a v0.2.0 tag must not ship a
   # binary that reports 0.1.1.
@@ -36,6 +31,11 @@ jobs:
 
   build:
     needs: gate
+    # Scoped to this job on purpose: `gate` builds against the distro's
+    # libvpx through pkg-config, and env-libvpx-sys panics if VPX_VERSION
+    # disagrees with what pkg-config reports.
+    env:
+      VPX_VERSION: "1.16.0"
     strategy:
       matrix:
         include:
