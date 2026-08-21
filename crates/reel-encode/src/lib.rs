@@ -4,7 +4,10 @@
 //! quantizer fallback for gradient-heavy content.
 
 pub mod webm;
-mod yuv;
+// Public because the MP4 path (which pipes frames to ffmpeg) needs the same
+// BT.709 conversion the VP9 encoder uses — doing it here rather than in
+// ffmpeg means converting once per distinct frame instead of once per tick.
+pub mod yuv;
 
 #[cfg(feature = "video")]
 mod opus;

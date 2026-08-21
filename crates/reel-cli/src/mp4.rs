@@ -8,8 +8,18 @@
 //!
 //! Frames arrive change-driven with a duration each (same as the WebM path);
 //! this writes them onto a constant-rate tick grid, because a rawvideo pipe
-//! carries no timestamps. Duplicate ticks cost a memcpy through the pipe and
-//! almost nothing in the encoder — static screen content is all skip blocks.
+//! carries no timestamps. A still stretch therefore goes down the pipe once
+//! per tick, and at 60fps most ticks are duplicates — so the pipe, not the
+//! encoder, is what costs. Two things keep that affordable:
+//!
+//! - Frames are converted to I420 *here*, once per distinct frame, and the
+//!   planes are re-sent for each tick that repeats them. Handing ffmpeg RGBA
+//!   instead would move 2.7x the bytes and make it re-convert every tick;
+//!   measured on an 11.8s 1734x1224 recording, that was 2.59s of ffmpeg
+//!   against 1.21s for pre-converted I420.
+//! - The conversion is `reel_encode::yuv`, the same BT.709 limited-range one
+//!   VP9 uses, so `.mp4` and `.webm` come out of the same colour maths — and
+//!   the output gets tagged bt709 rather than left for players to guess.
 
 use anyhow::{anyhow, bail, Context, Result};
 use std::io::Write;
@@ -51,6 +61,20 @@ pub fn missing_error() -> anyhow::Error {
 /// a little larger at the same quality. `libopenh264` is last: it works, but
 /// its rate control is cruder and it ignores `-crf`.
 const ENCODERS: [&str; 3] = ["libx264", "h264_videotoolbox", "libopenh264"];
+
+/// Colour tags matching `reel_encode::yuv`'s conversion, stated on both the
+/// input (rawvideo has no metadata to read) and the output (so the file says
+/// what it is instead of leaving players to infer it from frame size).
+const BT709: [&str; 8] = [
+    "-colorspace",
+    "bt709",
+    "-color_primaries",
+    "bt709",
+    "-color_trc",
+    "bt709",
+    "-color_range",
+    "tv",
+];
 
 /// Ask ffmpeg which of `ENCODERS` it was built with.
 pub fn pick_encoder(ffmpeg: &Path) -> Result<&'static str> {
@@ -124,6 +148,12 @@ pub struct Encoder {
     temps: Vec<PathBuf>,
     encoder: &'static str,
     quality_label: String,
+    /// Scratch for the RGBA -> I420 conversion, reused every frame.
+    i420: reel_encode::yuv::I420Frame,
+    /// The three planes laid out contiguously, so a tick is one `write_all`
+    /// rather than three — and a repeated tick is a straight re-send with no
+    /// conversion behind it.
+    planes: Vec<u8>,
     width: u32,
     height: u32,
     fps: f64,
@@ -145,10 +175,13 @@ impl Encoder {
         let mut cmd = Command::new(ffmpeg);
         cmd.args(["-hide_banner", "-loglevel", "error", "-y"]);
 
-        // Input 0: the frame pipe.
-        cmd.args(["-f", "rawvideo", "-pix_fmt", "rgba"]);
+        // Input 0: the frame pipe, already I420 so ffmpeg has no conversion
+        // to do. The tags have to be stated: rawvideo carries no metadata,
+        // and an untagged stream leaves players guessing at the matrix.
+        cmd.args(["-f", "rawvideo", "-pix_fmt", "yuv420p"]);
         cmd.args(["-s", &format!("{width}x{height}")]);
         cmd.args(["-r", &opts.fps.to_string()]);
+        cmd.args(BT709);
         cmd.args(["-i", "pipe:0"]);
 
         // Input 1: audio, as bare f32le — no WAV header needed.
@@ -191,6 +224,7 @@ impl Encoder {
         // level that the frame size doesn't fit makes VideoToolbox refuse to
         // open at all (-12902) where libx264 would only warn.
         cmd.args(["-pix_fmt", "yuv420p", "-profile:v", "high"]);
+        cmd.args(BT709);
         // yuv420p needs even dimensions; pad rather than scale so glyphs stay
         // pixel-exact. The pad colour is the canvas edge, not black.
         cmd.args(["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2"]);
@@ -225,6 +259,14 @@ impl Encoder {
             temps,
             encoder,
             quality_label,
+            i420: reel_encode::yuv::I420Frame {
+                width,
+                height,
+                y: Vec::new(),
+                u: Vec::new(),
+                v: Vec::new(),
+            },
+            planes: Vec::new(),
             width,
             height,
             fps: opts.fps.max(1) as f64,
@@ -235,23 +277,44 @@ impl Encoder {
     }
 
     /// Hold `rgba` for every output tick its display window covers.
+    ///
+    /// The conversion happens once here even when the frame covers thirty
+    /// ticks; only the finished planes are re-sent.
     pub fn push(&mut self, rgba: &[u8], width: u32, height: u32, dur_s: f64) -> Result<()> {
         if width != self.width || height != self.height {
             bail!("frame {} changed size mid-render", self.frames_written);
         }
         let end = self.clock_s + dur_s;
-        let stdin = self.child.stdin.as_mut().expect("stdin piped");
-        while (self.tick as f64) / self.fps < end - 1e-9 {
-            if let Err(e) = stdin.write_all(rgba) {
-                // A broken pipe means ffmpeg already exited; its stderr says
-                // why, and that's a far better error than "broken pipe".
-                if e.kind() == std::io::ErrorKind::BrokenPipe {
-                    return Err(self.fail("ffmpeg exited early"));
-                }
-                return Err(e).context("writing frames to ffmpeg");
+        // How many ticks this frame's display window covers; zero means a
+        // frame shorter than one tick, which costs us nothing to skip.
+        let ticks = {
+            let mut n = 0;
+            while ((self.tick + n) as f64) / self.fps < end - 1e-9 {
+                n += 1;
             }
-            self.tick += 1;
-            self.frames_written += 1;
+            n
+        };
+        if ticks > 0 {
+            reel_encode::yuv::rgba_to_i420_into(self.width, self.height, rgba, &mut self.i420);
+            self.planes.clear();
+            self.planes.extend_from_slice(&self.i420.y);
+            self.planes.extend_from_slice(&self.i420.u);
+            self.planes.extend_from_slice(&self.i420.v);
+
+            let stdin = self.child.stdin.as_mut().expect("stdin piped");
+            for _ in 0..ticks {
+                if let Err(e) = stdin.write_all(&self.planes) {
+                    // A broken pipe means ffmpeg already exited; its stderr
+                    // says why, and that's a far better error than "broken
+                    // pipe".
+                    if e.kind() == std::io::ErrorKind::BrokenPipe {
+                        return Err(self.fail("ffmpeg exited early"));
+                    }
+                    return Err(e).context("writing frames to ffmpeg");
+                }
+            }
+            self.tick += ticks;
+            self.frames_written += ticks;
         }
         self.clock_s = end;
         Ok(())
