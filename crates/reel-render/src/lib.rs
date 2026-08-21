@@ -4,6 +4,7 @@ pub mod chrome;
 pub mod font;
 pub mod fx;
 pub mod image;
+pub mod overlay;
 pub mod paths;
 pub mod plan;
 pub mod raster;
@@ -19,7 +20,7 @@ use font::{GlyphPixels, Rasterizer, Variant};
 use raster::GridStyle;
 use reel_format::ReelConfig;
 use reel_term::Snapshot;
-use reel_timeline::CaptionPos;
+use reel_timeline::{CaptionPos, HighlightStyle};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
@@ -48,6 +49,14 @@ pub struct RenderSettings {
     pub fit: chrome::CanvasFit,
     /// Blink the cursor during long stills.
     pub cursor_blink: bool,
+    /// Announce speed ramps with a chip.
+    pub speed_badge: bool,
+    /// Burn a progress bar into the frame.
+    pub progress: bool,
+    /// Marker positions as fractions of the output duration, notched onto
+    /// that bar. Lives here rather than on the `Renderer` because parallel
+    /// rendering rebuilds workers from the settings alone.
+    pub progress_ticks: Vec<f64>,
 }
 
 impl RenderSettings {
@@ -57,6 +66,8 @@ impl RenderSettings {
             cursor_blink: self.cursor_blink,
             cursor_slide_ms: self.template.motion.cursor_slide_ms,
             typing_glow: self.template.motion.typing_glow,
+            speed_badge: self.speed_badge,
+            progress: self.progress,
         }
     }
 }
@@ -126,6 +137,9 @@ pub fn settings_from_config(cfg: &ReelConfig) -> Result<(RenderSettings, Vec<Str
             fps: cfg.output.fps.unwrap_or(30).clamp(1, 120),
             fit: chrome::CanvasFit { aspect, exact },
             cursor_blink: cfg.style.cursor_blink.unwrap_or(true),
+            speed_badge: cfg.style.speed_badge.unwrap_or(false),
+            progress: cfg.style.progress.unwrap_or(false),
+            progress_ticks: Vec::new(),
         },
         warnings,
     ))
@@ -324,14 +338,52 @@ impl Renderer {
             fx::glow_cells(term, &cells, intensity);
         }
 
-        for &(c, r, w, h) in &frame.highlights {
-            let rect = (
-                (c as f32 * cur_cell.0) as i32 - view_off.0,
-                (r as f32 * cur_cell.1) as i32 - view_off.1,
-                (w as f32 * cur_cell.0).ceil() as i32,
-                (h as f32 * cur_cell.1).ceil() as i32,
-            );
-            chrome::dim_except(term, rect, 0.55);
+        // Highlights draw on the terminal image, before the chrome, so the
+        // camera carries them.
+        let ov = overlay::OverlayStyle::resolve(&tpl, &theme);
+        for hl in &frame.highlights {
+            let (c, r, w, h) = hl.rect;
+            let x = (c as f32 * cur_cell.0) as i32 - view_off.0;
+            let y = (r as f32 * cur_cell.1) as i32 - view_off.1;
+            let w = (w as f32 * cur_cell.0).ceil() as i32;
+            let h = (h as f32 * cur_cell.1).ceil() as i32;
+            let a = hl.anim.alpha.clamp(0.0, 1.0);
+            let t = hl.anim.t.clamp(0.0, 1.0);
+            match hl.style {
+                HighlightStyle::Spotlight => {
+                    // The pool of light widens as it brightens.
+                    chrome::dim_except(term, (x, y, w, h), 0.55 * a, (4.0 + 8.0 * t) * s)
+                }
+                HighlightStyle::Box => {
+                    // Breathing room, so the box frames the text instead of
+                    // clipping its ascenders — clamped to the grid, so a
+                    // full-width highlight keeps a closed outline instead of
+                    // losing its side strokes off-canvas.
+                    let pad = 4.0 * s;
+                    let (tw, th) = (term.width() as f32, term.height() as f32);
+                    let bx = (x as f32 - pad).max(1.0);
+                    let by = (y as f32 - pad).max(1.0);
+                    let bw = (x as f32 + w as f32 + pad).min(tw - 1.0) - bx;
+                    let bh = (y as f32 + h as f32 + pad).min(th - 1.0) - by;
+                    if let Some(rect) = tiny_skia::Rect::from_xywh(bx, by, bw, bh) {
+                        let radius = 6.0 * s;
+                        // A wash inside so it reads as *highlighted*, not
+                        // merely outlined — the fill is what a marker pen
+                        // does, the stroke is what a form field does.
+                        let wash = Rgba { a: (30.0 * a) as u8, ..ov.accent };
+                        chrome::fill_rounded(term, rect, radius, wash);
+                        // …and the outline draws itself around the rect.
+                        let color = Rgba { a: (255.0 * a) as u8, ..ov.accent };
+                        chrome::stroke_rounded_partial(term, rect, radius, color, 2.0 * s, t);
+                    }
+                }
+                HighlightStyle::Underline => {
+                    // Wipes out from the left.
+                    let color = Rgba { a: (255.0 * a) as u8, ..ov.accent };
+                    let th = (2.0 * s).max(1.0);
+                    raster::fill_rect(term, x, y + h, (w as f32 * t) as i32, th.ceil() as i32, color);
+                }
+            }
         }
 
         if let Some(crt) = &tpl.crt {
@@ -339,9 +391,9 @@ impl Renderer {
         }
 
         let key = (term.width(), term.height());
+        let l = chrome::layout(&tpl, key.0, key.1, s, self.settings.fit);
         if self.chrome_base.as_ref().map(|(k, _)| *k) != Some(key) {
             let mut base = chrome::compose_base(&tpl, &theme, key.0, key.1, s, self.settings.fit);
-            let l = chrome::layout(&tpl, key.0, key.1, s, self.settings.fit);
             Self::decorate_base(&mut self.raster, &mut base, &tpl, &theme, &l, s);
             self.chrome_base = Some((key, base));
         }
@@ -354,6 +406,20 @@ impl Renderer {
             self.settings.fit,
             &mut self.canvas_scratch,
         );
+
+        for note in &frame.notes {
+            let anchor =
+                overlay::cell_to_canvas(&l, view_off, cur_cell, note.anchor.0, note.anchor.1);
+            overlay::draw_note(
+                &mut self.raster,
+                &mut self.canvas_scratch,
+                note,
+                anchor,
+                &ov,
+                tpl.font_size,
+                s,
+            );
+        }
 
         for cap in &frame.captions {
             Self::draw_caption(
@@ -375,6 +441,45 @@ impl Renderer {
                 &mut self.canvas_scratch,
                 &frame.keys,
                 over_caption,
+                s,
+            );
+        }
+
+        if let Some(badge) = frame.rate_badge {
+            let taken = tpl.badge.as_ref().is_some_and(|b| b.corner == template::Corner::TopRight);
+            overlay::draw_rate_badge(
+                &mut self.raster,
+                &mut self.canvas_scratch,
+                badge.rate,
+                &l,
+                taken,
+                &ov,
+                tpl.font_size,
+                badge.anim.alpha,
+                s,
+            );
+        }
+
+        // A card covers the frame, so it goes over every other overlay; the
+        // progress bar goes over even that — it's the video's own furniture.
+        if let Some(card) = &frame.card {
+            overlay::draw_card(
+                &mut self.raster,
+                &mut self.canvas_scratch,
+                card,
+                canvas_scrim(&tpl, &theme),
+                &ov,
+                tpl.font_size,
+                s,
+            );
+        }
+
+        if let Some(p) = frame.progress {
+            overlay::draw_progress(
+                &mut self.canvas_scratch,
+                p,
+                &self.settings.progress_ticks,
+                &ov,
                 s,
             );
         }
@@ -581,9 +686,21 @@ impl Renderer {
     }
 }
 
+/// The canvas's base color — what a title card scrims the frame with, so a
+/// card reads as part of the template rather than as a black flash.
+fn canvas_scrim(tpl: &Template, theme: &Theme) -> Rgba {
+    match &tpl.canvas {
+        template::CanvasBg::Solid(c) => *c,
+        template::CanvasBg::Linear { stops, .. } | template::CanvasBg::Radial { stops } => {
+            stops.first().map(|(_, c)| *c).unwrap_or(theme.bg)
+        }
+        template::CanvasBg::Image { .. } => theme.bg,
+    }
+}
+
 /// Draws a single line of text at a baseline; returns the advance width.
 #[allow(clippy::too_many_arguments)]
-fn draw_text(
+pub(crate) fn draw_text(
     raster: &mut Rasterizer,
     canvas: &mut Pixmap,
     text: &str,
@@ -690,6 +807,10 @@ mod tests {
             camera: Camera::BASE,
             captions: vec![],
             highlights: vec![],
+            notes: vec![],
+            card: None,
+            rate_badge: None,
+            progress: None,
             keys: vec![],
             cursor_on: true,
             cursor_pos: None,
@@ -773,6 +894,104 @@ mod tests {
         let with = r.render_frame(&s, &f);
         let without = r.render_frame(&s, &base_frame());
         assert_ne!(with.data(), without.data());
+    }
+
+    #[test]
+    fn note_draws_and_follows_its_anchor() {
+        let mut r = Renderer::new(settings("minimal")).unwrap().0;
+        let s = snap(r#"[0.1, "o", "cache hit"]"#);
+        let note = |col: u16| plan::NoteDraw {
+            text: "look here".into(),
+            anchor: (col, 0),
+            style: reel_timeline::NoteStyle::Card,
+            side: reel_timeline::NoteSide::Down,
+            anim: plan::Anim::SETTLED,
+        };
+        let mut f = base_frame();
+        f.notes = vec![note(2)];
+        let left = r.render_frame(&s, &f).data().to_vec();
+        let plain = r.render_frame(&s, &base_frame()).data().to_vec();
+        assert_ne!(left, plain, "note drew nothing");
+        // The anchor moves with the cell, so the pixels differ.
+        f.notes = vec![note(30)];
+        assert_ne!(left, r.render_frame(&s, &f).data());
+        // A fully faded-out note draws nothing at all.
+        f.notes = vec![plan::NoteDraw {
+            anim: plan::Anim { t: 0.0, alpha: 0.0 },
+            ..note(2)
+        }];
+        assert_eq!(plain, r.render_frame(&s, &f).data());
+    }
+
+    #[test]
+    fn highlight_styles_differ_from_each_other() {
+        use reel_timeline::HighlightStyle::*;
+        let s = snap(r#"[0.1, "o", "highlight me"]"#);
+        let mut r = Renderer::new(settings("minimal")).unwrap().0;
+        let shot = |r: &mut Renderer, style| {
+            let mut f = base_frame();
+            f.highlights =
+                vec![plan::HighlightDraw { rect: (2, 0, 5, 1), style, anim: plan::Anim::SETTLED }];
+            r.render_frame(&s, &f).data().to_vec()
+        };
+        let spot = shot(&mut r, Spotlight);
+        let boxed = shot(&mut r, Box);
+        let under = shot(&mut r, Underline);
+        let plain = r.render_frame(&s, &base_frame()).data().to_vec();
+        for (name, pixels) in [("spotlight", &spot), ("box", &boxed), ("underline", &under)] {
+            assert_ne!(&plain, pixels, "{name} drew nothing");
+        }
+        assert_ne!(spot, boxed);
+        assert_ne!(boxed, under);
+    }
+
+    #[test]
+    fn a_card_scrims_the_whole_frame() {
+        let mut r = Renderer::new(settings("glass")).unwrap().0;
+        let s = snap(r#"[0.1, "o", "$ cargo build"]"#);
+        let mut f = base_frame();
+        f.card = Some(plan::CardDraw { text: "1 · Install".into(), anim: plan::Anim::SETTLED });
+        let carded = r.render_frame(&s, &f).data().to_vec();
+        let plain = r.render_frame(&s, &base_frame()).data().to_vec();
+        // A card covers the canvas rather than a region: most of the frame
+        // moves, not a band of it. (Pixels already the scrim's color stay
+        // put, so this is a majority test, not an every-pixel one.)
+        let moved = carded
+            .chunks_exact(4)
+            .zip(plain.chunks_exact(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        let total = carded.len() / 4;
+        assert!(moved * 10 > total * 6, "card only moved {moved}/{total} pixels");
+    }
+
+    #[test]
+    fn progress_bar_fills_from_the_left_in_the_accent_color() {
+        let set = settings("minimal");
+        let accent = set.theme.cursor;
+        let mut r = Renderer::new(set).unwrap().0;
+        let s = snap(r#"[0.1, "o", "hi"]"#);
+        let mut f = base_frame();
+        f.progress = Some(0.5);
+        let pix = r.render_frame(&s, &f);
+        let y = pix.height() - 2;
+        let filled = pix.pixel(pix.width() / 4, y).unwrap().demultiply();
+        assert_eq!((filled.red(), filled.green(), filled.blue()), (accent.r, accent.g, accent.b));
+        // Past the halfway mark it's the unfilled track, not the accent.
+        let empty = pix.pixel(pix.width() * 3 / 4, y).unwrap().demultiply();
+        assert_ne!((empty.red(), empty.green(), empty.blue()), (accent.r, accent.g, accent.b));
+    }
+
+    #[test]
+    fn the_speed_badge_draws_a_chip() {
+        let mut r = Renderer::new(settings("minimal")).unwrap().0;
+        let s = snap(r#"[0.1, "o", "hi"]"#);
+        let mut f = base_frame();
+        f.rate_badge = Some(plan::RateBadge { rate: 5.0, anim: plan::Anim::SETTLED });
+        assert_ne!(
+            r.render_frame(&s, &f).data(),
+            r.render_frame(&s, &base_frame()).data()
+        );
     }
 
     #[test]

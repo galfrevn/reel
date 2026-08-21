@@ -162,7 +162,7 @@ pub fn compose_base(
             );
         }
         if let Some(border) = tpl.border {
-            stroke_rounded(&mut canvas, win, radius, border, s);
+            stroke_rounded(&mut canvas, win, radius, border, 1.0 * s);
         }
     }
     canvas
@@ -329,11 +329,11 @@ fn blur_behind_window(canvas: &mut Pixmap, l: &Layout, radius: f32, blur: f32) {
     }
 }
 
-fn skia_color(c: Rgba) -> tiny_skia::Color {
+pub(crate) fn skia_color(c: Rgba) -> tiny_skia::Color {
     tiny_skia::Color::from_rgba8(c.r, c.g, c.b, c.a)
 }
 
-fn rounded_path(rect: Rect, r: f32) -> tiny_skia::Path {
+pub(crate) fn rounded_path(rect: Rect, r: f32) -> tiny_skia::Path {
     let (x, y, w, h) = (rect.x(), rect.y(), rect.width(), rect.height());
     let r = r.min(w / 2.0).min(h / 2.0).max(0.0);
     let mut pb = PathBuilder::new();
@@ -356,7 +356,7 @@ fn rounded_path(rect: Rect, r: f32) -> tiny_skia::Path {
     pb.finish().unwrap()
 }
 
-fn fill_rounded(canvas: &mut Pixmap, rect: Rect, r: f32, c: Rgba) {
+pub(crate) fn fill_rounded(canvas: &mut Pixmap, rect: Rect, r: f32, c: Rgba) {
     let path = rounded_path(rect, r);
     let mut paint = Paint::default();
     paint.set_color(skia_color(c));
@@ -364,13 +364,87 @@ fn fill_rounded(canvas: &mut Pixmap, rect: Rect, r: f32, c: Rgba) {
     canvas.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
 }
 
-fn stroke_rounded(canvas: &mut Pixmap, rect: Rect, r: f32, c: Rgba, s: f32) {
+/// Strokes only the first `fraction` of a rounded rect's outline, so a box
+/// can draw itself on instead of blinking into existence: one dash as long
+/// as the drawn part, then a gap longer than the whole path.
+pub(crate) fn stroke_rounded_partial(
+    canvas: &mut Pixmap,
+    rect: Rect,
+    r: f32,
+    c: Rgba,
+    width: f32,
+    fraction: f32,
+) {
+    let fraction = fraction.clamp(0.0, 1.0);
+    if fraction <= 0.001 {
+        return;
+    }
+    if fraction >= 0.999 {
+        return stroke_rounded(canvas, rect, r, c, width);
+    }
+    // Perimeter of a rounded rect: the straight runs plus one full circle.
+    let r = r.min(rect.width() / 2.0).min(rect.height() / 2.0).max(0.0);
+    let perimeter =
+        2.0 * (rect.width() + rect.height()) - 8.0 * r + 2.0 * std::f32::consts::PI * r;
     let path = rounded_path(rect, r);
     let mut paint = Paint::default();
     paint.set_color(skia_color(c));
     paint.anti_alias = true;
-    let stroke = tiny_skia::Stroke { width: 1.0 * s, ..Default::default() };
+    // Offset the dash so the outline grows from the top center outward,
+    // meeting itself at the bottom.
+    let Some(dash) = tiny_skia::StrokeDash::new(
+        vec![perimeter * fraction, perimeter * 2.0],
+        -perimeter * fraction / 2.0,
+    ) else {
+        return;
+    };
+    let stroke = tiny_skia::Stroke { width, dash: Some(dash), ..Default::default() };
     canvas.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+}
+
+pub(crate) fn stroke_rounded(canvas: &mut Pixmap, rect: Rect, r: f32, c: Rgba, width: f32) {
+    let path = rounded_path(rect, r);
+    let mut paint = Paint::default();
+    paint.set_color(skia_color(c));
+    paint.anti_alias = true;
+    let stroke = tiny_skia::Stroke { width, ..Default::default() };
+    canvas.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+}
+
+/// A straight line — leader lines, underlines, progress notches.
+pub(crate) fn stroke_line(canvas: &mut Pixmap, a: (f32, f32), b: (f32, f32), c: Rgba, width: f32) {
+    let mut pb = PathBuilder::new();
+    pb.move_to(a.0, a.1);
+    pb.line_to(b.0, b.1);
+    let Some(path) = pb.finish() else { return };
+    let mut paint = Paint::default();
+    paint.set_color(skia_color(c));
+    paint.anti_alias = true;
+    let stroke = tiny_skia::Stroke { width, ..Default::default() };
+    canvas.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+}
+
+/// A filled triangle — the tail of a speech-bubble note.
+pub(crate) fn fill_tri(canvas: &mut Pixmap, pts: [(f32, f32); 3], c: Rgba) {
+    let mut pb = PathBuilder::new();
+    pb.move_to(pts[0].0, pts[0].1);
+    pb.line_to(pts[1].0, pts[1].1);
+    pb.line_to(pts[2].0, pts[2].1);
+    pb.close();
+    let Some(path) = pb.finish() else { return };
+    let mut paint = Paint::default();
+    paint.set_color(skia_color(c));
+    paint.anti_alias = true;
+    canvas.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+}
+
+/// A filled circle — the dot a note's leader line lands on.
+pub(crate) fn fill_circle(canvas: &mut Pixmap, cx: f32, cy: f32, r: f32, c: Rgba) {
+    let Some(path) = PathBuilder::from_circle(cx, cy, r) else { return };
+    let mut paint = Paint::default();
+    paint.set_color(skia_color(c));
+    paint.anti_alias = true;
+    canvas.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
 }
 
 fn draw_dots(canvas: &mut Pixmap, l: &Layout, s: f32, colors: &[Rgba; 3]) {
@@ -493,15 +567,44 @@ fn box_blur(buf: &mut [f32], w: usize, h: usize, r: usize) {
 }
 
 /// Dims everything outside `rect` (px coords on the given pixmap).
-pub fn dim_except(pix: &mut Pixmap, rect: (i32, i32, i32, i32), strength: f32) {
+/// Dims everything outside `rect`, easing the dim in over `feather` pixels
+/// so the spotlight reads as light falling off rather than as a cut-out.
+pub fn dim_except(pix: &mut Pixmap, rect: (i32, i32, i32, i32), strength: f32, feather: f32) {
     let (rx, ry, rw, rh) = rect;
-    let a = (strength.clamp(0.0, 1.0) * 255.0) as u8;
+    let strength = strength.clamp(0.0, 1.0);
+    if strength <= 0.0 {
+        return;
+    }
     let (w, h) = (pix.width() as i32, pix.height() as i32);
-    // Four bands around the hole.
-    fill_rect(pix, 0, 0, w, ry, Rgba { r: 0, g: 0, b: 0, a });
-    fill_rect(pix, 0, ry + rh, w, h - ry - rh, Rgba { r: 0, g: 0, b: 0, a });
-    fill_rect(pix, 0, ry, rx, rh, Rgba { r: 0, g: 0, b: 0, a });
-    fill_rect(pix, rx + rw, ry, w - rx - rw, rh, Rgba { r: 0, g: 0, b: 0, a });
+    let f = feather.max(0.0).round() as i32;
+    // The fully-dim region starts `f` px outside the hole; the ring between
+    // grows from 0 to full dim.
+    let (ox0, oy0) = (rx - f, ry - f);
+    let (ox1, oy1) = (rx + rw + f, ry + rh + f);
+    let solid = Rgba { r: 0, g: 0, b: 0, a: (strength * 255.0) as u8 };
+    fill_rect(pix, 0, 0, w, oy0, solid);
+    fill_rect(pix, 0, oy1, w, h - oy1, solid);
+    fill_rect(pix, 0, oy0, ox0, oy1 - oy0, solid);
+    fill_rect(pix, ox1, oy0, w - ox1, oy1 - oy0, solid);
+    if f == 0 {
+        return;
+    }
+    // The ring: one 1px band per step, alpha rising with distance. The bands
+    // don't overlap, so each carries its final alpha directly.
+    for i in 0..f {
+        let k = (i + 1) as f32 / f as f32;
+        let a = (strength * k * 255.0) as u8;
+        if a == 0 {
+            continue;
+        }
+        let band = Rgba { r: 0, g: 0, b: 0, a };
+        let (bx0, by0) = (rx - i - 1, ry - i - 1);
+        let (bx1, by1) = (rx + rw + i + 1, ry + rh + i + 1);
+        fill_rect(pix, bx0, by0, bx1 - bx0, 1, band);
+        fill_rect(pix, bx0, by1 - 1, bx1 - bx0, 1, band);
+        fill_rect(pix, bx0, by0 + 1, 1, by1 - by0 - 2, band);
+        fill_rect(pix, bx1 - 1, by0 + 1, 1, by1 - by0 - 2, band);
+    }
 }
 
 #[cfg(test)]

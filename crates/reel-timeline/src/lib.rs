@@ -37,6 +37,10 @@ pub struct EditOps {
     pub speeds: Vec<(f64, f64, f64)>,
     /// (output duration, src_time): insert a still pause.
     pub holds: Vec<(f64, f64)>,
+    /// (src_time, output duration, text): a title card. Inserts a still like
+    /// a hold does, and the still's own output window is what the card is
+    /// drawn over — see [`Timeline::cards`].
+    pub cards: Vec<(f64, f64, String)>,
     /// Hold the final frame for this many output seconds before looping.
     pub freeze_last: Option<f64>,
 }
@@ -70,6 +74,8 @@ pub struct Timeline {
     out_duration: f64,
     /// Kept source intervals (post trim/cut), for anchor snapping.
     kept: Vec<(f64, f64)>,
+    /// (out_start, out_end, text) per title card, in output order.
+    cards: Vec<(f64, f64, String)>,
 }
 
 impl Timeline {
@@ -173,45 +179,62 @@ impl Timeline {
             }
         }
 
-        // 5. Interleave holds and assemble output offsets.
-        let mut holds: Vec<(f64, f64)> = ops
+        // 5. Interleave stills (holds and cards) and assemble output offsets.
+        // Cards ride the same queue as holds so the two stay deterministic
+        // against each other; a card additionally records the output window
+        // of the still it produced, which is what gets drawn over.
+        let mut stills: Vec<Still> = ops
             .holds
             .iter()
-            .map(|&(dur, at)| (at, dur))
+            .map(|&(dur, at)| Still { at, dur, text: None })
             .collect();
-        holds.sort_by(|x, y| x.0.total_cmp(&y.0));
-        for (at, _) in &holds {
-            if !kept.iter().any(|&(a, b)| *at >= a - EPS && *at <= b + EPS) {
-                warnings.push(format!("hold at {:.3}s falls inside a cut; it will snap to the seam", at));
+        stills.extend(
+            ops.cards
+                .iter()
+                .map(|(at, dur, text)| Still { at: *at, dur: *dur, text: Some(text.clone()) }),
+        );
+        stills.sort_by(|x, y| x.at.total_cmp(&y.at));
+        // Anchors before the first or after the last kept instant mean "at
+        // the start" / "at the end" — `card "…" at end` is the documented
+        // outro form. Only an anchor swallowed by an *interior* cut is a
+        // surprise worth warning about.
+        let (first_kept, last_kept) = (kept[0].0, kept.last().unwrap().1);
+        for s in &stills {
+            let interior = s.at > first_kept + EPS && s.at < last_kept - EPS;
+            if interior && !kept.iter().any(|&(a, b)| s.at >= a - EPS && s.at <= b + EPS) {
+                let what = if s.text.is_some() { "card" } else { "hold" };
+                warnings.push(format!(
+                    "{what} at {:.3}s falls inside a cut; it will snap to the seam",
+                    s.at
+                ));
             }
         }
 
         let mut segments = Vec::new();
+        let mut cards: Vec<(f64, f64, String)> = Vec::new();
         let mut out = 0.0f64;
-        let mut hold_iter = holds.into_iter().peekable();
+        let mut still_iter = stills.into_iter().peekable();
         for (sa, sb, rate) in plays {
-            // Holds anchored before/at this play's start fire first.
-            while let Some(&(at, _)) = hold_iter.peek() {
-                if at <= sa + EPS {
-                    let (_, dur) = hold_iter.next().unwrap();
-                    segments.push(Segment::Still { out_start: out, src_at: sa, dur });
-                    out += dur;
+            // Stills anchored before/at this play's start fire first.
+            while let Some(s) = still_iter.peek() {
+                if s.at <= sa + EPS {
+                    let s = still_iter.next().unwrap();
+                    push_still(&mut segments, &mut cards, &mut out, sa, s.dur, s.text);
                 } else {
                     break;
                 }
             }
-            // Holds inside this play split it.
+            // Stills inside this play split it.
             let mut cursor = sa;
-            while let Some(&(at, _)) = hold_iter.peek() {
-                if at < sb - EPS {
-                    let (at, dur) = hold_iter.next().unwrap();
-                    if at - cursor > EPS {
-                        segments.push(Segment::Play { out_start: out, src_start: cursor, src_end: at, rate });
-                        out += (at - cursor) / rate;
+            while let Some(s) = still_iter.peek() {
+                if s.at < sb - EPS {
+                    let s = still_iter.next().unwrap();
+                    if s.at - cursor > EPS {
+                        segments.push(Segment::Play { out_start: out, src_start: cursor, src_end: s.at, rate });
+                        out += (s.at - cursor) / rate;
                     }
-                    segments.push(Segment::Still { out_start: out, src_at: at, dur });
-                    out += dur;
-                    cursor = at;
+                    cursor = s.at;
+                    push_still(&mut segments, &mut cards, &mut out, s.at, s.dur, s.text);
                 } else {
                     break;
                 }
@@ -221,11 +244,11 @@ impl Timeline {
                 out += (sb - cursor) / rate;
             }
         }
-        // Trailing holds (anchored at/after the last kept time).
+        // Trailing stills (anchored at/after the last kept time). An outro
+        // card lands here, before `freeze last` appends its own still.
         let last_src = kept.last().unwrap().1;
-        for (_, dur) in hold_iter {
-            segments.push(Segment::Still { out_start: out, src_at: last_src, dur });
-            out += dur;
+        for s in still_iter {
+            push_still(&mut segments, &mut cards, &mut out, last_src, s.dur, s.text);
         }
 
         if let Some(dur) = ops.freeze_last {
@@ -235,7 +258,7 @@ impl Timeline {
             }
         }
 
-        Ok((Timeline { segments, out_duration: out, kept }, warnings))
+        Ok((Timeline { segments, out_duration: out, kept, cards }, warnings))
     }
 
     pub fn out_duration(&self) -> f64 {
@@ -302,6 +325,37 @@ impl Timeline {
     pub fn kept_ranges(&self) -> &[(f64, f64)] {
         &self.kept
     }
+
+    /// Title cards as (out_start, out_end, text), in output order.
+    ///
+    /// These come from the timeline rather than from projecting an anchor:
+    /// [`project`](Self::project) only maps `Play` segments, so the output
+    /// window a card *created* is not recoverable after the fact.
+    pub fn cards(&self) -> &[(f64, f64, String)] {
+        &self.cards
+    }
+}
+
+/// One pending still during compilation: a `hold` (no text) or a `card`.
+struct Still {
+    at: f64,
+    dur: f64,
+    text: Option<String>,
+}
+
+fn push_still(
+    segments: &mut Vec<Segment>,
+    cards: &mut Vec<(f64, f64, String)>,
+    out: &mut f64,
+    src_at: f64,
+    dur: f64,
+    text: Option<String>,
+) {
+    segments.push(Segment::Still { out_start: *out, src_at, dur });
+    if let Some(text) = text {
+        cards.push((*out, *out + dur, text));
+    }
+    *out += dur;
 }
 
 /// Where a caption sits on the canvas.
@@ -313,13 +367,55 @@ pub enum CaptionPos {
     Center,
 }
 
+/// How a `highlight` marks its rect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HighlightStyle {
+    /// Dim everything outside the rect.
+    #[default]
+    Spotlight,
+    /// Stroke a box around the rect, leaving the rest untouched.
+    Box,
+    /// Underline the rect's last row.
+    Underline,
+}
+
+/// How a `note` connects its card to the cell it points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NoteStyle {
+    /// Rectangular card with a leader line and a dot on the anchor.
+    #[default]
+    Card,
+    /// Speech bubble with a tail pointing at the anchor.
+    Bubble,
+}
+
+/// Which way a `note` sits from its anchor (`Auto` picks the roomiest side).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NoteSide {
+    #[default]
+    Auto,
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
 /// Visual overlay ops. Anchors/ranges in source time, durations in output time.
 #[derive(Debug, Clone)]
 pub enum VisualOp {
     Zoom { factor: f64, center: (u16, u16), range: Option<(f64, f64)> },
     Pan { to: (u16, u16), range: (f64, f64) },
     Caption { text: String, at: f64, dur: f64, pos: CaptionPos },
-    Highlight { rect: (u16, u16, u16, u16), at: f64, dur: f64 },
+    Highlight { rect: (u16, u16, u16, u16), at: f64, dur: f64, style: HighlightStyle },
+    /// A callout anchored to a cell, pointing at it from `side`.
+    Note {
+        text: String,
+        anchor: (u16, u16),
+        at: f64,
+        dur: f64,
+        style: NoteStyle,
+        side: NoteSide,
+    },
     /// One keystroke-overlay chip (a key label from the recorded input).
     Key { label: String, at: f64 },
 }
@@ -416,6 +512,87 @@ mod tests {
         assert!((tl.sample(4.9) - 4.9).abs() < EPS);
         assert!((tl.sample(6.0) - 5.0).abs() < EPS); // inside the hold
         assert!((tl.sample(8.0) - 6.0).abs() < EPS); // after it
+    }
+
+    #[test]
+    fn card_inserts_a_still_and_reports_its_window() {
+        let ops = EditOps {
+            cards: vec![(5.0, 2.0, "Step 1".into())],
+            ..Default::default()
+        };
+        let tl = compile(ops, 10.0);
+        assert!((tl.out_duration() - 12.0).abs() < EPS);
+        assert_eq!(tl.cards().len(), 1);
+        let (a, b, text) = &tl.cards()[0];
+        assert!((a - 5.0).abs() < EPS, "card starts where the still does");
+        assert!((b - 7.0).abs() < EPS);
+        assert_eq!(text, "Step 1");
+        // The card window holds the source state at its anchor.
+        assert!((tl.sample(6.0) - 5.0).abs() < EPS);
+    }
+
+    #[test]
+    fn cards_and_holds_share_one_ordered_queue() {
+        let ops = EditOps {
+            holds: vec![(1.0, 5.0)],
+            cards: vec![(2.0, 2.0, "intro".into()), (8.0, 1.0, "outro".into())],
+            ..Default::default()
+        };
+        let tl = compile(ops, 10.0);
+        assert!((tl.out_duration() - 14.0).abs() < EPS);
+        let windows: Vec<(f64, f64)> = tl.cards().iter().map(|(a, b, _)| (*a, *b)).collect();
+        // intro at 2s (out 2..4), then the hold at 5s (out 5..6), then the
+        // outro card at 8s (out 9..10) — each shifted by what came before.
+        assert_eq!(windows.len(), 2);
+        assert!((windows[0].0 - 2.0).abs() < EPS, "{windows:?}");
+        assert!((windows[0].1 - 4.0).abs() < EPS, "{windows:?}");
+        assert!((windows[1].0 - 11.0).abs() < EPS, "{windows:?}");
+        assert!((windows[1].1 - 12.0).abs() < EPS, "{windows:?}");
+        // Card windows never overlap a Play segment's footage.
+        for (a, b, _) in tl.cards() {
+            assert!((tl.sample(*a) - tl.sample((a + b) / 2.0)).abs() < EPS);
+        }
+    }
+
+    #[test]
+    fn outro_card_lands_before_the_freeze() {
+        let ops = EditOps {
+            cards: vec![(10.0, 2.0, "github.com/x/reel".into())],
+            freeze_last: Some(1.0),
+            ..Default::default()
+        };
+        let tl = compile(ops, 10.0);
+        assert!((tl.out_duration() - 13.0).abs() < EPS);
+        let (a, b, _) = &tl.cards()[0];
+        assert!((a - 10.0).abs() < EPS);
+        assert!((b - 12.0).abs() < EPS, "the freeze appends after the card");
+    }
+
+    #[test]
+    fn a_card_inside_a_cut_snaps_and_warns() {
+        let ops = EditOps {
+            cuts: vec![(4.0, 6.0)],
+            cards: vec![(5.0, 1.0, "oops".into())],
+            ..Default::default()
+        };
+        let (tl, warnings) = Timeline::compile(&ops, 10.0).unwrap();
+        assert!(warnings.iter().any(|w| w.contains("card at")), "{warnings:?}");
+        assert_eq!(tl.cards().len(), 1);
+    }
+
+    #[test]
+    fn an_outro_card_past_the_trim_is_not_a_warning() {
+        // `card "…" at end` resolves past the trimmed tail; that's the
+        // documented outro form, not an anchor lost in a cut.
+        let ops = EditOps {
+            trim: Some((0.0, 6.0)),
+            cards: vec![(10.0, 1.5, "fin".into())],
+            ..Default::default()
+        };
+        let (tl, warnings) = Timeline::compile(&ops, 10.0).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let (a, b, _) = &tl.cards()[0];
+        assert!((a - 6.0).abs() < EPS && (b - 7.5).abs() < EPS);
     }
 
     #[test]

@@ -37,6 +37,92 @@ impl<'a> GridStyle<'a> {
     }
 }
 
+/// A rectangle inside a cell, in cell fractions: (x0, y0, x1, y1).
+type BlockPart = (f32, f32, f32, f32);
+
+/// The sub-rectangles making up a Block Elements character (U+2580..U+259F),
+/// plus the alpha the shade characters ask for.
+///
+/// These are drawn as geometry rather than blitted from the font. A glyph
+/// bitmap has a fixed pixel width while the cell advance is fractional, so
+/// wherever the advance rounds up the blit leaves a 1px seam — visible as
+/// gaps between columns, and as a chopped-up logo in any TUI that draws with
+/// blocks. Deriving them from the cell rect instead makes neighbours share
+/// edges exactly, which is what real terminals do.
+fn block_parts(ch: char) -> Option<(&'static [BlockPart], f32)> {
+    const T: f32 = 1.0 / 8.0;
+    let parts: (&'static [BlockPart], f32) = match ch {
+        // Full block and the shades: the whole cell at varying alpha.
+        '\u{2588}' => (&[(0.0, 0.0, 1.0, 1.0)], 1.0),
+        '\u{2591}' => (&[(0.0, 0.0, 1.0, 1.0)], 0.25),
+        '\u{2592}' => (&[(0.0, 0.0, 1.0, 1.0)], 0.5),
+        '\u{2593}' => (&[(0.0, 0.0, 1.0, 1.0)], 0.75),
+        // Halves.
+        '\u{2580}' => (&[(0.0, 0.0, 1.0, 0.5)], 1.0),
+        '\u{2584}' => (&[(0.0, 0.5, 1.0, 1.0)], 1.0),
+        '\u{258C}' => (&[(0.0, 0.0, 0.5, 1.0)], 1.0),
+        '\u{2590}' => (&[(0.5, 0.0, 1.0, 1.0)], 1.0),
+        // Lower eighths, growing upward.
+        '\u{2581}' => (&[(0.0, 1.0 - T, 1.0, 1.0)], 1.0),
+        '\u{2582}' => (&[(0.0, 1.0 - 2.0 * T, 1.0, 1.0)], 1.0),
+        '\u{2583}' => (&[(0.0, 1.0 - 3.0 * T, 1.0, 1.0)], 1.0),
+        '\u{2585}' => (&[(0.0, 1.0 - 5.0 * T, 1.0, 1.0)], 1.0),
+        '\u{2586}' => (&[(0.0, 1.0 - 6.0 * T, 1.0, 1.0)], 1.0),
+        '\u{2587}' => (&[(0.0, 1.0 - 7.0 * T, 1.0, 1.0)], 1.0),
+        // Left eighths, growing rightward.
+        '\u{258F}' => (&[(0.0, 0.0, T, 1.0)], 1.0),
+        '\u{258E}' => (&[(0.0, 0.0, 2.0 * T, 1.0)], 1.0),
+        '\u{258D}' => (&[(0.0, 0.0, 3.0 * T, 1.0)], 1.0),
+        '\u{258B}' => (&[(0.0, 0.0, 5.0 * T, 1.0)], 1.0),
+        '\u{258A}' => (&[(0.0, 0.0, 6.0 * T, 1.0)], 1.0),
+        '\u{2589}' => (&[(0.0, 0.0, 7.0 * T, 1.0)], 1.0),
+        // Single upper/right eighths.
+        '\u{2594}' => (&[(0.0, 0.0, 1.0, T)], 1.0),
+        '\u{2595}' => (&[(1.0 - T, 0.0, 1.0, 1.0)], 1.0),
+        // Quadrants. UL = (0,0,.5,.5), UR = (.5,0,1,.5),
+        //            LL = (0,.5,.5,1),  LR = (.5,.5,1,1).
+        '\u{2596}' => (&[(0.0, 0.5, 0.5, 1.0)], 1.0),
+        '\u{2597}' => (&[(0.5, 0.5, 1.0, 1.0)], 1.0),
+        '\u{2598}' => (&[(0.0, 0.0, 0.5, 0.5)], 1.0),
+        '\u{259D}' => (&[(0.5, 0.0, 1.0, 0.5)], 1.0),
+        '\u{2599}' => (&[(0.0, 0.0, 0.5, 0.5), (0.0, 0.5, 1.0, 1.0)], 1.0),
+        '\u{259A}' => (&[(0.0, 0.0, 0.5, 0.5), (0.5, 0.5, 1.0, 1.0)], 1.0),
+        '\u{259B}' => (&[(0.0, 0.0, 1.0, 0.5), (0.0, 0.5, 0.5, 1.0)], 1.0),
+        '\u{259C}' => (&[(0.0, 0.0, 1.0, 0.5), (0.5, 0.5, 1.0, 1.0)], 1.0),
+        '\u{259E}' => (&[(0.5, 0.0, 1.0, 0.5), (0.0, 0.5, 0.5, 1.0)], 1.0),
+        '\u{259F}' => (&[(0.5, 0.0, 1.0, 0.5), (0.0, 0.5, 1.0, 1.0)], 1.0),
+        _ => return None,
+    };
+    Some(parts)
+}
+
+/// Fills a Block Elements character into the exact cell rect. Returns false
+/// for anything that isn't one, so the caller falls back to the font.
+#[allow(clippy::too_many_arguments)]
+fn draw_block(
+    pix: &mut Pixmap,
+    ch: char,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    fg: Rgba,
+) -> bool {
+    let Some((parts, alpha)) = block_parts(ch) else { return false };
+    let (w, h) = ((x1 - x0) as f32, (y1 - y0) as f32);
+    let color = Rgba { a: (fg.a as f32 * alpha) as u8, ..fg };
+    for &(fx0, fy0, fx1, fy1) in parts {
+        // Snap to the cell's own integer edges so a full block covers it
+        // exactly and abutting cells leave nothing between them.
+        let px0 = x0 + (w * fx0).round() as i32;
+        let py0 = y0 + (h * fy0).round() as i32;
+        let px1 = x0 + (w * fx1).round() as i32;
+        let py1 = y0 + (h * fy1).round() as i32;
+        fill_rect(pix, px0, py0, px1 - px0, py1 - py0, color);
+    }
+    true
+}
+
 /// Renders the full grid at the given font size. The same routine serves the
 /// base view and the zoom view (at a larger size), so zoomed text is
 /// re-rasterized, never upscaled.
@@ -107,6 +193,17 @@ pub fn raster_grid_into(r: &mut Rasterizer, snap: &Snapshot, style: &GridStyle, 
             }
             let x = col as f32 * m.cell_w;
             let y = row as f32 * m.cell_h;
+
+            // Block elements are geometry, not glyphs — same cell edges the
+            // background fill used, so runs of them tile without seams.
+            let span = if cell.attrs.contains(CellAttrs::WIDE) { 2 } else { 1 };
+            let bx0 = (col as f32 * m.cell_w).round() as i32;
+            let bx1 = ((col + span) as f32 * m.cell_w).round() as i32;
+            let by0 = (row as f32 * m.cell_h).round() as i32;
+            let by1 = ((row + 1) as f32 * m.cell_h).round() as i32;
+            if draw_block(pix, cell.ch, bx0, by0, bx1, by1, fg) {
+                continue;
+            }
 
             let variant = Variant::select(
                 cell.attrs.contains(CellAttrs::BOLD),
@@ -376,6 +473,53 @@ mod tests {
             p.alpha() == 255 && p.red() as i32 > red.r as i32 - 60 && p.red() > p.blue() && p.red() > 120
         });
         assert!(found, "no red-ish glyph pixels found");
+    }
+
+    /// A run of full blocks must paint one solid bar. Font glyphs are
+    /// rasterized at a fixed bitmap width while the cell advance is
+    /// fractional, so blitting them leaves a 1px seam wherever the advance
+    /// rounds up — visible as gaps between columns and as a chopped-up
+    /// logo in any TUI that draws with block elements.
+    #[test]
+    fn a_run_of_full_blocks_has_no_seams() {
+        let s = snap(r#"[0.1, "o", "\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588"]"#, 12, 2);
+        let theme = builtin("reel-dark").unwrap();
+        let mut r = Rasterizer::new(None).unwrap().0;
+        let pix = raster_grid(&mut r, &s, &GridStyle::new(&theme, 17.0, 1.4, false));
+        let m = r.fonts.cell_metrics(17.0, 1.4);
+        let y = (m.cell_h * 0.5) as u32;
+        // Sample across the middle of the run, a pixel inside either end.
+        let x0 = 1;
+        let x1 = (8.0 * m.cell_w) as u32 - 2;
+        let mut gaps = Vec::new();
+        for x in x0..x1 {
+            let p = pix.pixel(x, y).unwrap();
+            if (p.red() as i32 - theme.fg.r as i32).abs() > 40 {
+                gaps.push(x);
+            }
+        }
+        assert!(gaps.is_empty(), "seams between block columns at x={gaps:?}");
+    }
+
+    /// The same for a horizontal box-drawing rule: one unbroken line.
+    #[test]
+    fn a_box_drawing_rule_is_unbroken() {
+        let s = snap(r#"[0.1, "o", "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"]"#, 12, 2);
+        let theme = builtin("reel-dark").unwrap();
+        let mut r = Rasterizer::new(None).unwrap().0;
+        let pix = raster_grid(&mut r, &s, &GridStyle::new(&theme, 17.0, 1.4, false));
+        let m = r.fonts.cell_metrics(17.0, 1.4);
+        let x1 = (8.0 * m.cell_w) as u32 - 2;
+        // Find the row the rule sits on, then check it runs uninterrupted.
+        let row = (0..(m.cell_h as u32))
+            .max_by_key(|&y| {
+                (1..x1).filter(|&x| pix.pixel(x, y).unwrap().alpha() > 200).count()
+            })
+            .unwrap();
+        let gaps: Vec<u32> = (1..x1)
+            .filter(|&x| pix.pixel(x, row).unwrap().alpha() < 128)
+            .collect();
+        assert!(gaps.is_empty(), "rule broken at x={gaps:?} (row {row})");
     }
 
     #[test]
