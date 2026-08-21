@@ -11,6 +11,7 @@ on:
       - "templates/**"
       - "sounds/**"
       - "crates/reel-cli/assets/demo.cast"
+      - "documentation/llms.txt"
       - ".github/workflows/gallery.yml"
   workflow_dispatch:
 
@@ -42,6 +43,12 @@ jobs:
 
       - name: Render the gallery
         run: python3 registry/build_gallery.py --reel target/release/reel --out _site
+
+      # Served at https://galfrevn.github.io/reel/llms.txt — the condensed
+      # reference an agent can fetch without cloning. `reel llms` prints the
+      # same file from the binary.
+      - name: Publish llms.txt
+        run: cp documentation/llms.txt _site/llms.txt
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

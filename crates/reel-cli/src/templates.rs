@@ -5,12 +5,29 @@
 //! add owner/repo` installs them all; `owner/repo/name` picks one. No hosted
 //! infrastructure, nothing to run.
 
+use crate::json;
 use crate::net;
 use anyhow::{anyhow, bail, Context, Result};
 use reel_render::template;
 use std::path::{Path, PathBuf};
 
-pub fn list() {
+pub fn list() -> Result<()> {
+    if json::on() {
+        let mut out = Vec::new();
+        for name in template::template_names() {
+            let t = template::builtin(name).unwrap();
+            out.push(serde_json::json!({
+                "name": name, "description": t.description, "source": "builtin",
+            }));
+        }
+        for name in template::user_template_names() {
+            let desc = template::lookup(&name).map(|t| t.description).unwrap_or_default();
+            out.push(serde_json::json!({
+                "name": name, "description": desc, "source": "installed",
+            }));
+        }
+        return json::emit(serde_json::json!({ "templates": out }));
+    }
     for name in template::template_names() {
         let t = template::builtin(name).unwrap();
         println!("{name:<10} {}", t.description);
@@ -21,6 +38,7 @@ pub fn list() {
             .unwrap_or_default();
         println!("{name:<10} {desc} (installed)");
     }
+    Ok(())
 }
 
 /// Prints a template as TOML — any builtin doubles as a starting point:
@@ -119,6 +137,13 @@ pub fn try_template(source: &str) -> Result<()> {
     let dir = preview_dir()?;
     let (template, label) = resolve_try_source(source, &dir)?;
     let out = render_demo_preview(&template, &label)?;
+    if json::on() {
+        return json::emit(serde_json::json!({
+            "template": label,
+            "preview": out.display().to_string(),
+            "source": source,
+        }));
+    }
     println!("previewing `{label}` → {}", out.display());
     open_preview(&out);
     Ok(())
@@ -185,7 +210,12 @@ fn resolve_try_source(source: &str, dir: &Path) -> Result<(String, String)> {
 }
 
 /// Best-effort: pop the rendered preview open in the platform viewer.
+/// `--json` never opens anything — an agent-driven run must not spawn a
+/// window on the user's desktop, and the path is in the document anyway.
 pub fn open_preview(path: &PathBuf) {
+    if json::on() {
+        return;
+    }
     #[cfg(target_os = "macos")]
     let opener = "open";
     #[cfg(all(unix, not(target_os = "macos")))]
