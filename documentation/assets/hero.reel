@@ -1,20 +1,54 @@
 ---
+# The edit script behind the README hero.
+#
+# Unlike the other demos in this repo, the source recording is a real
+# Claude Code session rather than the bundled `demo.cast`, and it isn't
+# committed — it carries the account it was recorded under. The ops below
+# are here to be read: this is the whole edit, and every one of them is
+# documented in skills/reel/references/reel-file-format.md.
 [source]
-cast = "../../crates/reel-cli/assets/demo.cast"
+cast = "capture.cast"
 
 [template]
-name = "glass"
+name = "vercel"
+
+[style]
+padding     = 16
+speed_badge = true
+progress    = true
+
+[audio]
+keyboard  = "topre"
+volume    = 0.42
+ui_sounds = true
+thinking  = "soft-pulse"
 
 [output]
 file   = "hero.gif"
-budget = "1500kb"
-fps    = 30
+budget = "2mb"
 scale  = 2
 ---
 
-keys    on
-caption "Record once — edit like video" at 0.3s for 2.4s pos=top
-speed   2x from 1.9s to 3.5s
-zoom    1.5x at (23,10) from 4.0s to 6.2s
-caption "cuts, zooms, captions, speed ramps — all declarative" at 7.6s for 2.8s pos=top
-freeze  last 1.2s
+# Drop the startup and the dead tail.
+trim  1.6s..18.6s
+redact "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+
+marker "prompt" at 7.4s
+marker "answer" at 12.7s
+
+card  "Claude Code, edited with reel" at 1.6s for 2s
+sound "page" at 1.6s
+
+note  "the script types the prompt" at (25,26) from 7.0s for 1.2s style=bubble side=up
+sound "droplet" at 7.0s
+
+# Four seconds of thinking, compressed — the chip says so on screen.
+speed  4x from 8.6s to 12.6s
+volume 0.2 from 8.6s to 12.6s
+
+note      "the answer, streaming in" at (55,19) from 17.1s for 2.6s
+highlight (0,19,100,3) at 17.4s for 1.8s style=box
+sound     "success" at 17.2s
+
+card  "github.com/galfrevn/reel" at end for 2s
+sound "arrival" at 18.5s
