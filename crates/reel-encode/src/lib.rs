@@ -138,8 +138,9 @@ impl WebmEncoder {
                         if j == 0 {
                             self.blocks.extend(self.enc.encode(&self.i420, pts, dur)?);
                         } else {
-                            // Same image re-held: skip the plane copies and
-                            // the good-quality deadline.
+                            // Same image re-held: skip the plane copies. The
+                            // deadline stays GOOD_QUALITY — realtime trashes
+                            // VP9's rate control here (20x larger output).
                             self.blocks.extend(self.enc.encode_repeat(pts, dur)?);
                         }
                         j = jn;
