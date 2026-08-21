@@ -845,7 +845,7 @@ pub fn pixmap_to_rgba_into(pix: &Pixmap, out: &mut Vec<u8>) {
     let px = pix.pixels();
     out.clear();
     out.resize(px.len() * 4, 0);
-    for (p, o) in px.iter().zip(out.chunks_exact_mut(4)) {
+    for (p, o) in px.iter().zip(out.as_chunks_mut::<4>().0) {
         // Opaque pixels — virtually the whole canvas — need no demultiply.
         if p.alpha() == 255 {
             o.copy_from_slice(&[p.red(), p.green(), p.blue(), 255]);
@@ -1089,8 +1089,10 @@ mod tests {
         // moves, not a band of it. (Pixels already the scrim's color stay
         // put, so this is a majority test, not an every-pixel one.)
         let moved = carded
-            .chunks_exact(4)
-            .zip(plain.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(plain.as_chunks::<4>().0)
             .filter(|(a, b)| a != b)
             .count();
         let total = carded.len() / 4;

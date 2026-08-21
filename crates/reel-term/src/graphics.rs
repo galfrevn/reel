@@ -178,7 +178,7 @@ impl GraphicsState {
             32 => (raw, meta.width, meta.height),
             24 => {
                 let mut rgba = Vec::with_capacity(raw.len() / 3 * 4);
-                for px in raw.chunks_exact(3) {
+                for px in raw.as_chunks::<3>().0 {
                     rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
                 }
                 (rgba, meta.width, meta.height)
@@ -437,7 +437,7 @@ fn decode_png(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
         png::ColorType::Rgba => buf,
         png::ColorType::Rgb => {
             let mut out = Vec::with_capacity(buf.len() / 3 * 4);
-            for px in buf.chunks_exact(3) {
+            for px in buf.as_chunks::<3>().0 {
                 out.extend_from_slice(&[px[0], px[1], px[2], 255]);
             }
             out

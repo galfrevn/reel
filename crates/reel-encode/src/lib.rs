@@ -441,7 +441,7 @@ impl GifPaletteBuilder {
         // Terminal frames are long runs of one color; remembering the last
         // pixel skips the map for most of the frame.
         let mut last = u32::MAX;
-        for px in rgba.chunks_exact(4) {
+        for px in rgba.as_chunks::<4>().0 {
             let key = pack_rgb(px);
             if self.exact && key != last && self.colors.get(key).is_none() {
                 if self.colors.len() >= self.max_colors as usize {
@@ -458,7 +458,7 @@ impl GifPaletteBuilder {
                 if self.samples.len() / 4 > MAX_QUANT_SAMPLES {
                     // Keep every other sample and halve the intake rate.
                     let mut keep = Vec::with_capacity(self.samples.len() / 2);
-                    for pair in self.samples.chunks_exact(8) {
+                    for pair in self.samples.as_chunks::<8>().0 {
                         keep.extend_from_slice(&pair[..4]);
                     }
                     self.samples = keep;
@@ -603,7 +603,7 @@ impl<W: std::io::Write> GifStream<W> {
         let dithering = self.palette.dither;
         let mut last = u64::MAX;
         let mut last_idx = 0u8;
-        for (i, px) in rgba.chunks_exact(4).enumerate() {
+        for (i, px) in rgba.as_chunks::<4>().0.iter().enumerate() {
             let (x, y) = (i % w_px, i / w_px);
             let level = if dithering { BAYER4[y & 3][x & 3] } else { 7 };
             let key = pack_rgb(px) as u64 | ((level as u64) << 32);
@@ -872,7 +872,7 @@ mod tests {
     #[test]
     fn gradient_falls_back_to_quantizer() {
         let mut f = solid(64, 64, [0, 0, 0], 0.5);
-        for (i, px) in f.data.chunks_exact_mut(4).enumerate() {
+        for (i, px) in f.data.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             px[0] = (i % 256) as u8;
             px[1] = (i / 64 % 256) as u8;
             px[2] = (i / 3 % 256) as u8;

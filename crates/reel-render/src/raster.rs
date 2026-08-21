@@ -241,7 +241,7 @@ fn composite_images(pix: &mut Pixmap, snap: &Snapshot, cell_w: f32, cell_h: f32)
     use tiny_skia::{FilterQuality, PixmapPaint, Transform};
     for img in &snap.images {
         let Some(mut src) = Pixmap::new(img.width, img.height) else { continue };
-        for (i, px) in img.rgba.chunks_exact(4).enumerate() {
+        for (i, px) in img.rgba.as_chunks::<4>().0.iter().enumerate() {
             let a = px[3] as u16;
             let pm = |v: u8| ((v as u16 * a) / 255) as u8;
             src.pixels_mut()[i] =
