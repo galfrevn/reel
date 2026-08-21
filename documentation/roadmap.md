@@ -107,8 +107,33 @@ work:
 
 - **APNG / animated WebP** — better than GIF where supported, cheap to add on
   top of the existing frame pipeline.
-- **`--frames-out`** — dump raw frames so anyone who needs MP4/H.264 can pipe
-  to their own ffmpeg. (Shipping an MP4 encoder is off the table: licensing.)
+- **`--frames-out`** — shipped. `reel render X --frames-out DIR` writes a
+  constant-rate PNG sequence, a `frames.json` carrying the edit (markers,
+  captions, cards, zooms, speed ramps, in seconds *and* frame numbers) and a
+  synced `audio.wav`. It answers MP4 without an H.264 encoder (licensing
+  keeps that off the table) and is the handoff into Remotion or an NLE — see
+  the `reel-motion` skill. What's left: an option to hardlink held frames
+  instead of copying them, for long demos where the duplication hurts.
+
+## Agent surface
+
+`--json` shipped across every command (one document on stdout, `{"error"}`
+on failure, warnings on stderr, nothing interactive), alongside
+`documentation/llms.txt` and `reel llms`. What's next in that direction:
+
+- **`suggest`** — deepened: on top of trims, ramps and a freeze it now reads
+  the recorded keystrokes (backspace corrections, a typed `exit`), proposes
+  `redact` for anything reel's secret scanner sees, marks the biggest burst
+  of output after a wait as `@payoff`, zooms it when the region is compact
+  enough to magnify without cropping, anchors ops on the cast's own markers,
+  and picks the template and container that suit the recording. Speculative
+  ops are written commented out with their reason. What's left, in order:
+  propose `note`/`caption` placement (not wording — that needs the model,
+  not the CLI); recognise the "install → configure → run" shape and draft
+  `card` chapter breaks; learn the typo-cut seam well enough to stop hedging
+  on it. Nobody without a timeline model can copy any of this.
+- **`--json` for `watch`** — a line-delimited event stream (re-render done,
+  size, warnings) so an agent can drive an iteration loop.
 
 ## Template registry & gallery
 

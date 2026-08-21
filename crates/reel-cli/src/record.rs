@@ -304,6 +304,20 @@ pub fn record(out: &Path, size: Option<String>, command: Vec<String>) -> Result<
         1 => ", 1 marker (@1)".to_string(),
         n => format!(", {n} markers (@1..@{n})"),
     };
+    if crate::json::on() {
+        let mut meta = out.as_os_str().to_owned();
+        meta.push(".reelmeta");
+        return crate::json::emit(serde_json::json!({
+            "cast": out.display().to_string(),
+            "meta": std::path::PathBuf::from(meta).display().to_string(),
+            "duration_s": secs,
+            "cols": cols,
+            "rows": rows,
+            "input_events": n_inputs,
+            "markers": n_markers,
+            "exit_ok": status.success(),
+        }));
+    }
     eprintln!(
         "\nrecorded {secs:.1}s → {} (+.reelmeta, {n_inputs} input events{marker_note}){}",
         out.display(),

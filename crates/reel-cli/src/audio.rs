@@ -33,15 +33,28 @@ pub fn installed_sounds() -> HashMap<String, Recipe> {
     out
 }
 
-pub fn list() {
+pub fn list() -> Result<()> {
+    let mut installed: Vec<String> = installed_sounds().into_keys().collect();
+    installed.sort();
+    if crate::json::on() {
+        let mut out: Vec<serde_json::Value> = reel_audio::recipe_names()
+            .iter()
+            .map(|n| serde_json::json!({ "name": n, "source": "builtin" }))
+            .collect();
+        out.extend(
+            installed
+                .iter()
+                .map(|n| serde_json::json!({ "name": n, "source": "installed" })),
+        );
+        return crate::json::emit(serde_json::json!({ "sounds": out }));
+    }
     for name in reel_audio::recipe_names() {
         println!("{name}");
     }
-    let mut installed: Vec<String> = installed_sounds().into_keys().collect();
-    installed.sort();
     for name in installed {
         println!("{name} (installed)");
     }
+    Ok(())
 }
 
 /// Prints a recipe as TOML — any builtin doubles as a starting point:
@@ -94,6 +107,14 @@ pub fn try_sound(source: &str, out: Option<std::path::PathBuf>) -> Result<()> {
         }
     };
     std::fs::write(&path, wav_bytes(&samples))?;
+    if crate::json::on() {
+        return crate::json::emit(serde_json::json!({
+            "sound": s.name,
+            "output": path.display().to_string(),
+            "samples": samples.len(),
+            "sample_rate": reel_audio::SAMPLE_RATE,
+        }));
+    }
     println!("{}", path.display());
     if audition {
         crate::templates::open_preview(&path);
@@ -102,7 +123,7 @@ pub fn try_sound(source: &str, out: Option<std::path::PathBuf>) -> Result<()> {
 }
 
 /// Mono 16-bit PCM WAV at the synthesis rate — small enough to write by hand.
-fn wav_bytes(samples: &[f32]) -> Vec<u8> {
+pub fn wav_bytes(samples: &[f32]) -> Vec<u8> {
     let sr = reel_audio::SAMPLE_RATE;
     let data_len = (samples.len() * 2) as u32;
     let mut out = Vec::with_capacity(44 + samples.len() * 2);

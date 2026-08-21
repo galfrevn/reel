@@ -113,6 +113,7 @@ pub fn search(kind: Kind, query: Option<&str>) -> Result<()> {
     let index = fetch_index()?;
     let q = query.map(str::to_lowercase);
     let mut hits = 0usize;
+    let mut found: Vec<serde_json::Value> = Vec::new();
     for pack in &index.packs {
         let matching: Vec<&Entry> = pack
             .entries(kind)
@@ -126,6 +127,20 @@ pub fn search(kind: Kind, query: Option<&str>) -> Result<()> {
             })
             .collect();
         if matching.is_empty() {
+            continue;
+        }
+        if crate::json::on() {
+            for t in matching {
+                found.push(serde_json::json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "tags": t.tags,
+                    "repo": pack.repo,
+                    "pack": pack.description,
+                    "install": format!("{} {}/{}", kind.add_cmd(), pack.repo, t.name),
+                }));
+                hits += 1;
+            }
             continue;
         }
         if hits > 0 {
@@ -142,6 +157,14 @@ pub fn search(kind: Kind, query: Option<&str>) -> Result<()> {
             println!("               {} {}/{}", kind.add_cmd(), pack.repo, t.name);
             hits += 1;
         }
+    }
+    if crate::json::on() {
+        return crate::json::emit(serde_json::json!({
+            "kind": kind.noun(),
+            "query": query,
+            "results": found,
+            "index": index_url(),
+        }));
     }
     if hits == 0 {
         match query {

@@ -1,4 +1,6 @@
 mod audio;
+mod frames;
+mod json;
 mod net;
 mod packs;
 mod pipeline;
@@ -24,6 +26,11 @@ use std::path::PathBuf;
     propagate_version = true
 )]
 struct Cli {
+    /// Machine-readable output: one JSON document on stdout, `{"error": …}`
+    /// on failure. Progress and warnings move to stderr, and nothing opens a
+    /// viewer or waits on input — the mode to drive reel from an agent.
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -55,6 +62,10 @@ enum Command {
         /// Render silent even if the .reel configures audio (webm only)
         #[arg(long)]
         no_audio: bool,
+        /// Write a constant-rate PNG sequence + frames.json here instead of
+        /// encoding a video — for Remotion, an NLE, or your own ffmpeg
+        #[arg(long, value_name = "DIR")]
+        frames_out: Option<PathBuf>,
         /// Suppress progress output
         #[arg(long, short)]
         quiet: bool,
@@ -106,16 +117,17 @@ enum Command {
     },
     /// Summarize a .reel file: timeline, markers, size estimate
     Inspect { file: PathBuf },
-    /// Analyze a recording and draft the edit script (trims, speed ramps)
+    /// Analyze a recording and draft the edit script (trims, ramps, zoom,
+    /// redaction) plus the template and format that suit it
     Suggest {
         /// A .cast recording
         file: PathBuf,
         /// Write a complete .reel file instead of printing the ops
         #[arg(long, value_name = "FILE.reel")]
         write: Option<PathBuf>,
-        /// Template for the written file
-        #[arg(long, default_value = "glass")]
-        template: String,
+        /// Template for the written file (default: chosen from the recording)
+        #[arg(long)]
+        template: Option<String>,
     },
     /// Scaffold a new .reel file
     Init {
@@ -125,6 +137,8 @@ enum Command {
         #[arg(long, short, default_value = "demo.reel")]
         out: PathBuf,
     },
+    /// Print the condensed reference a coding agent should read (llms.txt)
+    Llms,
     /// List available templates (alias for `template list`)
     Templates,
     /// Manage templates
@@ -238,31 +252,82 @@ enum ThemeAction {
     },
 }
 
-fn list_themes() {
+fn list_themes() -> Result<()> {
+    if json::on() {
+        let mut out: Vec<serde_json::Value> = reel_render::theme::theme_names()
+            .iter()
+            .map(|n| serde_json::json!({ "name": n, "source": "builtin" }))
+            .collect();
+        out.extend(
+            reel_render::theme::user_theme_names()
+                .iter()
+                .map(|n| serde_json::json!({ "name": n, "source": "imported" })),
+        );
+        return json::emit(serde_json::json!({ "themes": out }));
+    }
     for name in reel_render::theme::theme_names() {
         println!("{name}");
     }
     for name in reel_render::theme::user_theme_names() {
         println!("{name} (imported)");
     }
+    Ok(())
 }
 
 fn main() {
-    if let Err(e) = run() {
-        eprintln!("error: {e:#}");
+    let cli = Cli::parse();
+    json::set(cli.json);
+    if let Err(e) = run(cli.command) {
+        if json::on() {
+            json::fail(&e);
+        } else {
+            eprintln!("error: {e:#}");
+        }
         std::process::exit(1);
     }
 }
 
-fn run() -> Result<()> {
-    match Cli::parse().command {
-        Command::Render { file, out, template, budget, scale, aspect, size, no_audio, quiet } => {
-            let args =
-                pipeline::RenderArgs { out, template, budget, scale, aspect, size, no_audio, quiet };
+/// The condensed reference, embedded so an agent can read it with no
+/// network: `reel llms`.
+const LLMS_TXT: &str = include_str!("../../../documentation/llms.txt");
+
+fn run(command: Command) -> Result<()> {
+    // `--json` promises a single parseable document; progress narration would
+    // land on stdout beside it.
+    let json_quiet = json::on();
+    match command {
+        Command::Render {
+            file,
+            out,
+            template,
+            budget,
+            scale,
+            aspect,
+            size,
+            no_audio,
+            frames_out,
+            quiet,
+        } => {
+            let args = pipeline::RenderArgs {
+                out,
+                template,
+                budget,
+                scale,
+                aspect,
+                size,
+                no_audio,
+                frames_out,
+                quiet: quiet || json_quiet,
+            };
             pipeline::render(&file, args)
+        }
+        Command::Llms => {
+            print!("{LLMS_TXT}");
+            Ok(())
         }
         Command::Watch { file, out, template, serve } => watch::watch(&file, out, template, serve),
         Command::Run { file, no_render, quiet } => {
+            let quiet = quiet || json_quiet;
             let text = std::fs::read_to_string(&file)
                 .with_context(|| format!("reading {}", file.display()))?;
             let parsed = reel_format::ReelFile::parse(&text)?;
@@ -274,6 +339,11 @@ fn run() -> Result<()> {
             }
             let cast = script::capture(&file, &parsed, quiet)?;
             if no_render {
+                if json::on() {
+                    return json::emit(serde_json::json!({
+                        "cast": cast.display().to_string(),
+                    }));
+                }
                 println!("{}", cast.display());
                 return Ok(());
             }
@@ -283,12 +353,16 @@ fn run() -> Result<()> {
         Command::Shot { file, at, out, template } => pipeline::shot(&file, &at, out, template),
         Command::Inspect { file } => pipeline::inspect(&file),
         Command::Suggest { file, write, template } => {
-            suggest::suggest(&file, write.as_deref(), &template)
+            // Corrections and the trailing `exit` are only visible in the
+            // recorded input, which lives in the sidecar (or the cast's own
+            // "i" events for an asciinema recording).
+            let cast = reel_cast::Cast::load(&file)?;
+            let inputs = pipeline::raw_inputs(&cast, &file);
+            suggest::suggest(&file, write.as_deref(), template.as_deref(), &inputs)
         }
         Command::Init { template, out } => init(&template, &out),
         Command::Templates | Command::Template { action: TemplateAction::List } => {
-            templates::list();
-            Ok(())
+            templates::list()
         }
         Command::Template { action: TemplateAction::Show { name } } => templates::show(&name),
         Command::Template { action: TemplateAction::Add { source } } => templates::add(&source),
@@ -301,19 +375,13 @@ fn run() -> Result<()> {
         Command::Template { action: TemplateAction::Publish { file, tag, no_pr, no_preview } } => {
             publish::publish(&file, &tag, no_pr, no_preview)
         }
-        Command::Themes | Command::Theme { action: ThemeAction::List } => {
-            list_themes();
-            Ok(())
-        }
+        Command::Themes | Command::Theme { action: ThemeAction::List } => list_themes(),
         Command::Theme { action: ThemeAction::Import { file, from, name } } => match (file, from) {
             (Some(f), None) => themes::import(&f, name),
             (None, Some(t)) => themes::import_from_terminal(&t, name),
             _ => bail!("pass a theme file or --from iterm|kitty|ghostty"),
         },
-        Command::Sounds | Command::Audio { action: AudioAction::List } => {
-            audio::list();
-            Ok(())
-        }
+        Command::Sounds | Command::Audio { action: AudioAction::List } => audio::list(),
         Command::Audio { action: AudioAction::Show { name } } => audio::show(&name),
         Command::Audio { action: AudioAction::Try { source, out } } => {
             audio::try_sound(&source, out)
@@ -361,6 +429,13 @@ file = "demo.gif"
 "#
     );
     std::fs::write(out, content).with_context(|| format!("writing {}", out.display()))?;
+    if json::on() {
+        return json::emit(serde_json::json!({
+            "file": out.display().to_string(),
+            "template": template,
+            "next": format!("record a cast, then `reel render {}`", out.display()),
+        }));
+    }
     println!("wrote {}", out.display());
     println!("next: record a cast, then `reel render {}`", out.display());
     Ok(())

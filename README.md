@@ -16,6 +16,10 @@ Record a terminal session once, then treat it as a timeline you can cut,
 speed-ramp, zoom, caption, restyle, and score with sound — re-rendering in
 milliseconds without ever re-running the underlying program.
 
+Plenty of tools will get a terminal session onto disk and back out as
+pixels. reel is about the half that comes after: **post-production**. The
+recording is frozen; the edit is a text file you keep changing.
+
 <p align="center">
   <img src="documentation/assets/hero.gif" alt="A Claude Code session rendered by reel: a title card, a speech-bubble note on the typed prompt, a 4x speed ramp over the model's thinking with a speed chip, a callout and a drawn-on box around the answer, and a progress bar notched at each marker" />
 </p>
@@ -34,8 +38,10 @@ edits, and renders for you:
 npx skills add galfrevn/reel
 ```
 
-Works anywhere [agent skills](skills/reel/SKILL.md) do (Claude Code, Cursor,
-…). Ask for the outcome rather than the steps —
+That installs two skills: `reel` (record, edit, render) and `reel-motion`
+(taking the footage into Remotion or an NLE for a launch video). They work
+anywhere [agent skills](skills/reel/SKILL.md) do (Claude Code, Cursor, …).
+Ask for the outcome rather than the steps —
 
 > *"record a demo of my CLI and make me a README GIF under 800kb with the
 > boring install part sped up"*
@@ -130,35 +136,54 @@ footage before it.
   instead of chipmunking them.
 - **GIF, WebM, APNG, PNG** — routed by the output extension; `reel shot`
   grabs a single styled frame for screenshots.
+- **A way out to motion graphics** — `--frames-out frames/` writes a
+  constant-rate PNG sequence plus a `frames.json` carrying the edit itself:
+  every marker, caption, card and speed ramp, in seconds *and* frame
+  numbers. Drop it into [Remotion](https://remotion.dev), an NLE, or your
+  own `ffmpeg` (which is also how you get an MP4 — reel ships no H.264
+  encoder). The soundtrack rides along as a synced `audio.wav`.
+- **Built for agents, in the CLI** — `--json` on every command means one
+  JSON document on stdout, `{"error": …}` on failure, warnings on stderr,
+  and nothing that opens a window or waits on input. `reel llms` prints the
+  condensed reference, and `reel suggest` drafts the whole `.reel` — trims,
+  ramps over dead air, `redact` for secrets it spots, a marker on the payoff,
+  and the template and container that suit the recording, each with its
+  reasoning attached. Anything it isn't sure about it writes commented out.
 
-## How it compares to VHS
+## How it compares
 
-[VHS](https://github.com/charmbracelet/vhs) is the reference tool in this
-space: you write a `.tape` script, it types the commands into a virtual
-terminal and renders what happens. reel comes at the problem from the other
-end — capture a session that actually happened, then edit the timeline.
+Terminal recorders mostly solve the same half of the problem: getting a
+session onto disk and back out as pixels. The reference tool in that space
+is [VHS](https://github.com/charmbracelet/vhs) — you write a `.tape` script
+and it types the commands into a virtual terminal, rendering what happens.
+reel comes at the problem from the other end: capture a session that
+actually happened, then edit the timeline.
 
 | | VHS | reel |
 |---|---|---|
 | Input | a `.tape` script, executed on every render | a `.cast` recording — the program runs **once** |
-| Restyling | re-runs the session | pure re-render, sub-second, nothing executes |
+| Editing model | authored up front | **a timeline over a frozen recording** |
+| Pacing | `Sleep`, typing speed | `trim`, `cut`, `speed 5x from A to B`, `hold`, `freeze` |
+| Post-production | — | zoom/pan, captions, **callouts anchored to grid cells**, title cards, highlights, key chips, redaction |
+| Sound | — | **procedural keystrokes, UI cues and thinking beds** |
+| Size control | encoder settings | **`budget = "800kb"` + a printed degradation ladder** |
+| Restyling | re-runs the session | pure re-render, sub-second |
 | Interactive or non-deterministic apps | scripted step by step | performed by hand once, then edited |
-| Pacing | authored up front (`Sleep`, typing speed) | edited after the fact: `trim`, `cut`, `speed`, `freeze` |
-| Post-production | — | `zoom`, `caption`, `note`, `card`, `highlight`, keystroke overlay, redaction |
-| Scripted demos | the whole model | `reel run` covers the deterministic case too |
-| Install | `ttyd` + `ffmpeg` on `PATH` | one static binary |
-| Size control | encoder settings | `budget = "800kb"` + a printed degradation ladder |
-| Sound | — | procedural keystrokes and cues (WebM) |
-| Formats | GIF, MP4, WebM, PNG frames | GIF, WebM, APNG, PNG |
+| Looks | themes | 7 built-in templates + a federated registry and [live gallery](https://galfrevn.github.io/reel/) |
+| Formats | GIF, MP4, WebM, PNG frames | GIF, WebM, APNG, PNG, **PNG sequence + edit manifest** |
 | Sharing | `vhs publish` hosts the GIF | files out only; the registry shares *looks*, not videos |
+| Install | `ttyd` + `ffmpeg` on `PATH` | one static binary |
+| For agents | — | `--json`, `llms.txt`, skills, **`reel suggest` drafts the whole file** |
 
 Rule of thumb: a handful of deterministic commands you want regenerated in
 CI on every release fits the tape model well — and VHS will hand you an MP4,
-which reel deliberately won't (H.264 licensing). A long, keyboard-driven,
-non-deterministic session — an agentic TUI thinking for 40 seconds, a fuzzy
-finder, a game — is the wrong shape to script: record it once, then cut the
-dead air, ramp the wait, zoom the payoff, and re-render as often as taste
-demands without the program ever running again.
+which reel deliberately won't (H.264 licensing; use `--frames-out` and your
+own ffmpeg).
+
+A long, keyboard-driven, non-deterministic session — an agentic TUI thinking
+for 40 seconds, a fuzzy finder, a game — is the wrong shape to script.
+Record it once, then cut the dead air, ramp the wait, zoom the payoff, and
+re-render as often as taste demands without the program ever running again.
 
 ## The same recording, in every look
 
@@ -188,6 +213,8 @@ accounts, no infrastructure. Sounds work the same way: `reel audio search`,
 | Doc | What's in it |
 |---|---|
 | [skills/reel/SKILL.md](skills/reel/SKILL.md) | The agent skill: how an agent installs, records, edits, and renders |
+| [skills/reel-motion/SKILL.md](skills/reel-motion/SKILL.md) | Composing reel footage into a launch video (Remotion, an NLE, ffmpeg) |
+| [documentation/llms.txt](documentation/llms.txt) | The whole CLI and `.reel` format, condensed for coding agents (`reel llms`) |
 | [documentation/idea.md](documentation/idea.md) | What reel is, why it exists, and what it deliberately isn't |
 | [documentation/setup.md](documentation/setup.md) | Full user guide: install, recording, the `.reel` format, templates, audio, agent skill |
 | [documentation/development.md](documentation/development.md) | Building from source, workspace layout, tests, CI |

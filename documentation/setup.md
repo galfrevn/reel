@@ -138,11 +138,31 @@ reel render FILE               # .reel or .cast → .gif / .webm / .png / .txt
 reel watch FILE                # re-render on save; --serve for browser preview
 reel shot FILE --at T          # single frame PNG
 reel inspect FILE              # timeline summary: duration, size, where changes happen
+reel suggest CAST              # draft a whole .reel from a recording (--write FILE)
 reel init [template]           # scaffold a .reel file
+reel llms                      # the condensed reference, for coding agents
 reel template list|show|add|search|try|publish   # looks, incl. the community registry
 reel theme list|import         # themes, incl. base16 / Alacritty / iTerm2 import
 reel audio list|show|try|add|search|publish      # sound recipes, same registry
 ```
+
+Every command takes `--json`: one JSON document on stdout, `{"error": "…"}`
+and exit 1 on failure, warnings and progress on stderr, and nothing that
+opens a viewer or waits on input. It's how the agent skill drives reel, and
+it's there for your own scripts too.
+
+### Handing frames to another tool
+
+`reel render demo.reel --frames-out frames/` writes a constant-rate PNG
+sequence plus a `frames.json` describing the edit — markers, captions,
+cards, zooms and speed ramps, in seconds and frame numbers — and, when the
+demo has audio, a synced `audio.wav`. That's the way into
+[Remotion](https://remotion.dev) or an NLE for a launch video (see the
+[reel-motion skill](../skills/reel-motion/SKILL.md)), and the way to an MP4:
+the export prints the `ffmpeg` line to run.
+
+It's a lossless intermediate, so expect tens of megabytes for a short demo.
+For a README, render a GIF instead.
 
 ## Templates and themes
 
@@ -225,7 +245,9 @@ reel ships an [agent skill](../skills/reel/SKILL.md) so coding agents
 npx skills add galfrevn/reel
 ```
 
-Then ask your agent for the outcome, not the steps — *"record a demo of my
+That installs `reel` (record, edit, render) and `reel-motion` (taking the
+footage into Remotion or an NLE). Then ask your agent for the outcome, not
+the steps — *"record a demo of my
 CLI and make me a README GIF under 800kb with the boring install part sped
 up"*. The agent handles recording setup, inspection, the `.reel` edit,
 rendering, and size verification; you only perform the live session and
@@ -233,8 +255,9 @@ judge the result.
 
 ## Current limits
 
-- Outputs are `.gif`, `.webm`, `.png`, `.txt`. MP4 is deliberately
-  unsupported (licensing) — use WebM.
+- Outputs are `.gif`, `.webm`, `.apng`, `.png`, `.txt`. MP4 is deliberately
+  unsupported (licensing) — use WebM, or `--frames-out` plus your own
+  `ffmpeg`.
 - reel's main mode edits recordings that already exist. It can also drive a
   program itself — script mode (`reel run`) types, waits on screen text, and
   renders in one step — but that path suits deterministic CLIs, not

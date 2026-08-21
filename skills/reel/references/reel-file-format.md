@@ -298,12 +298,16 @@ reel record  [-o session.cast] [--size 220x54] -- CMD   # live capture + .reelme
                                        # Ctrl+] while recording drops a marker (@1, @2, …)
 reel render  FILE [-o OUT] [--template T] [--budget 800kb] [--scale N]
              [--aspect 16:9] [--size 1920x1080] [--no-audio] [-q]
+             [--frames-out DIR]        # PNG sequence + frames.json instead of a video
 reel run     FILE [--no-render] [-q]   # script mode: capture + render in one step
 reel watch   FILE [--serve [PORT]]     # re-render on save; browser preview at 127.0.0.1:4171
 reel shot    FILE --at 12s [-o out.png]  # single frame PNG (--at @marker works too)
 reel inspect FILE                      # duration, ops summary, markers, size estimate
-reel suggest CAST [--write demo.reel]  # draft the edit script from a recording
+reel suggest CAST [--write demo.reel] [--template T]
+                                       # draft the whole file: trims, ramps, redaction,
+                                       # a payoff marker, zoom, template and format
 reel init [TEMPLATE] [-o demo.reel]    # scaffold a .reel file
+reel llms                              # print the condensed agent reference
 
 reel templates                         # list built-in + installed templates
 reel template search [QUERY]           # search the community registry
@@ -324,6 +328,11 @@ reel audio search [QUERY]              # search the community sound registry
 reel audio publish FILE [--tag T]…     # validate + audition + open the registry PR (via gh)
 ```
 
+Every command also takes `--json`: one JSON document on stdout,
+`{"error": "…"}` and exit 1 on failure, warnings and progress on stderr, and
+nothing that opens a viewer or waits on input.
+
 `reel render session.cast` (a bare cast, no `.reel`) renders with default
 styling — good for a first preview. The community template gallery lives at
-<https://galfrevn.github.io/reel/>.
+<https://galfrevn.github.io/reel/>, and the condensed agent reference at
+<https://galfrevn.github.io/reel/llms.txt>.

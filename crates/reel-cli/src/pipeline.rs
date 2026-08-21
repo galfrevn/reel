@@ -1,6 +1,7 @@
 //! The render pipeline: .reel → cast → snapshots → timeline → frames →
 //! encoder, plus the greedy budget ladder.
 
+use crate::json;
 use anyhow::{anyhow, bail, Context, Result};
 use reel_cast::{Cast, EventKind, ReelMeta};
 use reel_encode::{GifOptions, PaletteMode, RgbaFrame, WebmOptions};
@@ -10,17 +11,17 @@ use reel_term::Snapshot;
 use reel_timeline::{AudioOp, Timeline, VisualOp};
 use std::path::{Path, PathBuf};
 
-struct Loaded {
-    file: ReelFile,
-    cast: Cast,
-    snapshots: Vec<Snapshot>,
-    timeline: Timeline,
-    visuals: Vec<VisualOp>,
-    audio_ops: Vec<AudioOp>,
+pub struct Loaded {
+    pub file: ReelFile,
+    pub cast: Cast,
+    pub snapshots: Vec<Snapshot>,
+    pub timeline: Timeline,
+    pub visuals: Vec<VisualOp>,
+    pub audio_ops: Vec<AudioOp>,
     /// Full marker table (cast + `marker` ops), label → source time.
-    markers: Vec<(String, f64)>,
-    base_dir: PathBuf,
-    cast_path: PathBuf,
+    pub markers: Vec<(String, f64)>,
+    pub base_dir: PathBuf,
+    pub cast_path: PathBuf,
 }
 
 /// State kept between `reel watch` renders: replayed snapshots keyed by cast
@@ -203,7 +204,7 @@ fn render_each(
 /// `renderer` must already carry the settings to render with (fit_exact
 /// applied); it is only used directly when the job is too small to be worth
 /// spinning up workers.
-fn render_each_parallel(
+pub fn render_each_parallel(
     renderer: &mut Renderer,
     plans: &[reel_render::FramePlan],
     snapshots: &[Snapshot],
@@ -258,7 +259,7 @@ fn render_each_parallel(
 /// Marker positions as fractions of the output duration — the notches on
 /// the progress bar. Markers live on the source clock, so one that fell
 /// inside a `cut` has no place on the bar and is dropped.
-fn progress_ticks(timeline: &Timeline, markers: &[(String, f64)]) -> Vec<f64> {
+pub fn progress_ticks(timeline: &Timeline, markers: &[(String, f64)]) -> Vec<f64> {
     let dur = timeline.out_duration();
     if dur <= 0.0 {
         return Vec::new();
@@ -294,7 +295,7 @@ fn render_first_frame(loaded: &Loaded, cfg: &ReelConfig) -> Result<(RgbaFrame, V
 
 /// Writes an output artifact atomically: a Ctrl-C mid-write (or a watch-mode
 /// consumer reading the file) must never observe a truncated gif/webm.
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
@@ -326,6 +327,30 @@ pub struct RenderArgs {
     pub size: Option<String>,
     pub no_audio: bool,
     pub quiet: bool,
+    /// Write a constant-rate PNG sequence + manifest here instead of
+    /// encoding a video (see `frames.rs`).
+    pub frames_out: Option<PathBuf>,
+}
+
+/// What a render produced. The human path narrates as it goes; this is the
+/// same information as data, for `--json` and for the caller's summary.
+#[derive(Default)]
+pub struct RenderReport {
+    pub format: String,
+    pub frames: usize,
+    pub bytes: u64,
+    /// Encoder detail, e.g. "exact 256-color palette (lossless)".
+    pub detail: Option<String>,
+    pub fps: Option<u32>,
+    pub scale: Option<u32>,
+    /// Budget-ladder rungs actually walked, in order. Empty means the
+    /// configured quality fit on the first try.
+    pub ladder: Vec<String>,
+    /// (requested bytes, whether the result fits inside it).
+    pub budget: Option<(u64, bool)>,
+    pub warnings: Vec<String>,
+    /// Sidecars written beside the output, e.g. the WebVTT captions.
+    pub sidecars: Vec<PathBuf>,
 }
 
 pub fn render(path: &Path, args: RenderArgs) -> Result<()> {
@@ -348,6 +373,11 @@ pub fn render(path: &Path, args: RenderArgs) -> Result<()> {
         cfg.audio.enabled = Some(false);
     }
 
+    if let Some(dir) = args.frames_out {
+        let report = crate::frames::write_frames(&loaded, &cfg, &dir, quiet)?;
+        return crate::frames::report(&report, quiet);
+    }
+
     let out_path = args
         .out
         .or_else(|| cfg.output.file.as_ref().map(|f| loaded.base_dir.join(f)))
@@ -363,13 +393,16 @@ fn dispatch_render(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: boo
         .map(str::to_ascii_lowercase)
         .unwrap_or_default();
 
-    let result = match ext.as_str() {
-        "gif" => render_gif(loaded, cfg.clone(), out_path, quiet),
+    let mut report = match ext.as_str() {
+        "gif" => render_gif(loaded, cfg.clone(), out_path, quiet)?,
         "png" => {
             let (f, warns) = render_first_frame(loaded, &cfg)?;
             print_warnings(&warns, quiet);
             write_atomic(out_path, &reel_encode::encode_png(f.width, f.height, &f.data)?)?;
-            done(out_path, quiet)
+            let mut r = done(out_path, quiet)?;
+            r.frames = 1;
+            r.warnings = warns;
+            r
         }
         "txt" => {
             let mut text = String::new();
@@ -378,30 +411,75 @@ fn dispatch_render(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: boo
                 text.push_str(&s.to_text());
             }
             write_atomic(out_path, text.as_bytes())?;
-            done(out_path, quiet)
+            let mut r = done(out_path, quiet)?;
+            r.frames = loaded.snapshots.len();
+            r
         }
-        "apng" => render_apng(loaded, cfg.clone(), out_path, quiet),
-        "webm" => render_webm(loaded, cfg.clone(), out_path, quiet),
+        "apng" => render_apng(loaded, cfg.clone(), out_path, quiet)?,
+        "webm" => render_webm(loaded, cfg.clone(), out_path, quiet)?,
         "mp4" => bail!(
-            "mp4 is deferred (H.264 licensing) — render a .webm, or use .gif for READMEs"
+            "mp4 is deferred (H.264 licensing) — render a .webm, use .gif for READMEs, \
+             or --frames-out DIR for a PNG sequence your own ffmpeg can encode"
         ),
         other => bail!(
             "unsupported output extension `.{other}` (use .gif, .webm, .apng, .png, or .txt)"
         ),
     };
-    if result.is_ok() && cfg.output.subtitles {
+    report.format = ext;
+    if cfg.output.subtitles {
         let vtt_path = out_path.with_extension("vtt");
         write_atomic(&vtt_path, render_vtt(&caption_cues(loaded)).as_bytes())?;
         if !quiet {
             eprintln!("{}: WebVTT captions sidecar", vtt_path.display());
         }
+        report.sidecars.push(vtt_path);
     }
-    result
+    if json::on() {
+        return json::emit(render_json(loaded, &cfg, out_path, &report));
+    }
+    Ok(())
+}
+
+/// The `--json` document for a render.
+fn render_json(
+    loaded: &Loaded,
+    cfg: &ReelConfig,
+    out_path: &Path,
+    r: &RenderReport,
+) -> serde_json::Value {
+    serde_json::json!({
+        "output": out_path.display().to_string(),
+        "format": r.format,
+        "bytes": r.bytes,
+        "size": human_size(r.bytes),
+        "frames": r.frames,
+        "fps": r.fps,
+        "scale": r.scale,
+        "encoder": r.detail,
+        "output_duration_s": loaded.timeline.out_duration(),
+        "source_duration_s": loaded.cast.duration(),
+        "template": cfg.template.name,
+        "budget": r.budget.map(|(requested, met)| serde_json::json!({
+            "requested_bytes": requested,
+            "requested": human_size(requested),
+            "met": met,
+            // The rungs walked to get there — empty when the configured
+            // quality fit on the first try.
+            "ladder": r.ladder,
+        })),
+        "sidecars": r.sidecars.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        "warnings": r.warnings,
+    })
 }
 
 /// Animated PNG: lossless truecolor, streamed in one pass (no palette to
 /// negotiate and no budget ladder — sizes are what the content costs).
-fn render_apng(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -> Result<()> {
+fn render_apng(
+    loaded: &Loaded,
+    cfg: ReelConfig,
+    out_path: &Path,
+    quiet: bool,
+) -> Result<RenderReport> {
     if cfg.output.budget.is_some() && !quiet {
         eprintln!("note: budget is ignored for .apng (lossless format)");
     }
@@ -413,6 +491,8 @@ fn render_apng(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
     renderer.fit_exact(loaded.cast.cols(), loaded.cast.rows());
     print_warnings(&warns, quiet);
     print_warnings(&font_warns, quiet);
+    let mut warnings = warns;
+    warnings.extend(font_warns);
 
     let plans = plan_frames(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps, &plan_opts);
     if !quiet {
@@ -447,7 +527,14 @@ fn render_apng(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
             frames
         );
     }
-    Ok(())
+    Ok(RenderReport {
+        frames,
+        bytes: bytes.len() as u64,
+        detail: Some("lossless truecolor".into()),
+        fps: Some(fps),
+        warnings,
+        ..Default::default()
+    })
 }
 
 /// Caption windows in output time: (start, end, text).
@@ -484,7 +571,7 @@ fn render_vtt(cues: &[(f64, f64, String)]) -> String {
 
 /// Builds the mixed 48kHz mono buffer for this render, or `None` when audio
 /// is inactive. Only the WebM path calls this.
-fn build_audio(
+pub fn build_audio(
     cast: &Cast,
     cast_path: &Path,
     snapshots: &[Snapshot],
@@ -565,7 +652,7 @@ fn load_sidecar_warn(cast_path: &Path) -> Option<ReelMeta> {
 
 /// Raw input events in source time: the `.reelmeta` sidecar when `reel
 /// record` wrote one, else any "i" events an asciinema recording kept.
-fn raw_inputs(cast: &Cast, cast_path: &Path) -> Vec<(f64, String)> {
+pub fn raw_inputs(cast: &Cast, cast_path: &Path) -> Vec<(f64, String)> {
     match load_sidecar_warn(cast_path) {
         Some(meta) if !meta.input_events.is_empty() => meta
             .input_events
@@ -655,7 +742,12 @@ fn grid_changes(snaps: &[Snapshot]) -> Vec<reel_audio::GridChange> {
 ///
 /// Frames stream straight from the renderer into the encoder — nothing
 /// holds the whole video in RAM (a 1080p render used to peak at ~3GB).
-fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -> Result<()> {
+fn render_webm(
+    loaded: &Loaded,
+    cfg: ReelConfig,
+    out_path: &Path,
+    quiet: bool,
+) -> Result<RenderReport> {
     let budget_bytes = match &cfg.output.budget {
         Some(b) => Some(
             parse_budget(b).ok_or_else(|| anyhow!("invalid budget `{b}` (try 800kb or 2mb)"))?,
@@ -684,6 +776,8 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
     ];
 
     let mut renderer: Option<Renderer> = None;
+    let mut warnings: Vec<String> = Vec::new();
+    let mut walked: Vec<String> = Vec::new();
     for (i, (label, cq, fps, scale)) in ladder.iter().enumerate() {
         if budget_bytes.is_none() && i > 0 {
             break;
@@ -707,6 +801,8 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
         if i == 0 {
             print_warnings(&warns, quiet);
             print_warnings(&font_warns, quiet);
+            warnings.extend(warns);
+            warnings.extend(font_warns);
         }
         let r = renderer.as_mut().unwrap();
         r.fit_exact(loaded.cast.cols(), loaded.cast.rows());
@@ -766,8 +862,32 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
                     }
                 }
             }
-            return Ok(());
+            if let Some(b) = budget_bytes {
+                if size > b {
+                    warnings.push(format!(
+                        "could not reach budget {} even at lowest quality",
+                        human_size(b)
+                    ));
+                }
+            }
+            return Ok(RenderReport {
+                frames: report.frames,
+                bytes: size,
+                detail: Some(format!(
+                    "vp9 cq {} ({} kbps), {}",
+                    report.cq_level,
+                    report.bitrate_kbps,
+                    if report.has_audio { "opus audio" } else { "no audio" }
+                )),
+                fps: Some(*fps),
+                scale: Some(*scale),
+                ladder: walked,
+                budget: budget_bytes.map(|b| (b, size <= b)),
+                warnings,
+                ..Default::default()
+            });
         }
+        walked.push(ladder[i + 1].0.clone());
         if !quiet {
             eprintln!(
                 "budget: {} at {} exceeds {}, degrading ({})…",
@@ -784,7 +904,12 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
 /// Greedy degradation ladder: try the configured quality first, then walk
 /// down predictable steps until the budget fits. Each step is reported so
 /// the result isn't a black box.
-fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -> Result<()> {
+fn render_gif(
+    loaded: &Loaded,
+    cfg: ReelConfig,
+    out_path: &Path,
+    quiet: bool,
+) -> Result<RenderReport> {
     let budget_bytes = match &cfg.output.budget {
         Some(b) => Some(
             parse_budget(b).ok_or_else(|| anyhow!("invalid budget `{b}` (try 800kb or 2mb)"))?,
@@ -827,6 +952,8 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
     // cache warm, so the second pass is much cheaper than the first.
     let mut renderer: Option<Renderer> = None;
     let mut prev: Option<(u32, u32)> = None;
+    let mut warnings: Vec<String> = Vec::new();
+    let mut walked: Vec<String> = Vec::new();
     for (i, (label, fps, scale, colors)) in ladder.iter().enumerate() {
         if budget_bytes.is_none() && i > 0 {
             break;
@@ -855,6 +982,8 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
         if i == 0 {
             print_warnings(&warns, quiet);
             print_warnings(&font_warns, quiet);
+            warnings.extend(warns);
+            warnings.extend(font_warns);
         }
         let r = renderer.as_mut().unwrap();
         r.fit_exact(loaded.cast.cols(), loaded.cast.rows());
@@ -893,11 +1022,12 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
         let fits = budget_bytes.map(|b| size <= b).unwrap_or(true);
         if fits || i == ladder.len() - 1 {
             write_atomic(out_path, &bytes)?;
+            let palette_detail = match palette {
+                PaletteMode::Exact(n) => format!("exact {n}-color palette (lossless)"),
+                PaletteMode::Quantized(n) => format!("quantized to {n} colors"),
+            };
             if !quiet {
-                let palette = match palette {
-                    PaletteMode::Exact(n) => format!("exact {n}-color palette (lossless)"),
-                    PaletteMode::Quantized(n) => format!("quantized to {n} colors"),
-                };
+                let palette = palette_detail.clone();
                 eprintln!(
                     "{}: {} — {} frames, {}, fps cap {}, scale {}{}",
                     out_path.display(),
@@ -917,8 +1047,27 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
                     }
                 }
             }
-            return Ok(());
+            if let Some(b) = budget_bytes {
+                if size > b {
+                    warnings.push(format!(
+                        "could not reach budget {} even at lowest quality",
+                        human_size(b)
+                    ));
+                }
+            }
+            return Ok(RenderReport {
+                frames: frames_written,
+                bytes: size,
+                detail: Some(palette_detail),
+                fps: Some(*fps),
+                scale: Some(*scale),
+                ladder: walked,
+                budget: budget_bytes.map(|b| (b, size <= b)),
+                warnings,
+                ..Default::default()
+            });
         }
+        walked.push(ladder[i + 1].0.clone());
         if !quiet {
             eprintln!(
                 "budget: {} at {} exceeds {}, degrading ({})…",
@@ -962,17 +1111,27 @@ pub fn shot(path: &Path, at: &str, out: Option<PathBuf>, template: Option<String
         .ok_or_else(|| anyhow!("no frames"))?;
 
     let pix = renderer.render_frame(&loaded.snapshots[frame.snapshot], frame);
+    let (width, height) = (pix.width(), pix.height());
     let out_path = out.unwrap_or_else(|| path.with_extension("png"));
-    write_atomic(
-        &out_path,
-        &reel_encode::encode_png(pix.width(), pix.height(), &pixmap_to_rgba(&pix))?,
-    )?;
+    write_atomic(&out_path, &reel_encode::encode_png(width, height, &pixmap_to_rgba(&pix))?)?;
+    if json::on() {
+        return json::emit(serde_json::json!({
+            "output": out_path.display().to_string(),
+            "at_s": frame.out_t,
+            "width": width,
+            "height": height,
+            "bytes": std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0),
+        }));
+    }
     println!("{} (frame at {:.2}s)", out_path.display(), frame.out_t);
     Ok(())
 }
 
 pub fn inspect(path: &Path) -> Result<()> {
     let loaded = load(path, None, true)?;
+    if json::on() {
+        return json::emit(inspect_json(path, &loaded));
+    }
     let cast = &loaded.cast;
     println!("cast      {}", loaded.file.config.source.as_ref().unwrap().cast);
     println!("grid      {}x{}", cast.cols(), cast.rows());
@@ -1035,6 +1194,101 @@ pub fn inspect(path: &Path) -> Result<()> {
         println!("keys      {keys} keystroke chips overlaid");
     }
     Ok(())
+}
+
+/// The `--json` document for `reel inspect` — the structured view an agent
+/// needs to write the next edit: where time went, what the markers are, and
+/// which overlays are already placed. Times are seconds; `out_*` are on the
+/// edited clock, `src_*` on the recording's own.
+fn inspect_json(path: &Path, loaded: &Loaded) -> serde_json::Value {
+    let cast = &loaded.cast;
+    let tl = &loaded.timeline;
+
+    let segments: Vec<_> = tl
+        .segments()
+        .iter()
+        .map(|seg| match *seg {
+            reel_timeline::Segment::Play { out_start, src_start, src_end, rate } => {
+                serde_json::json!({
+                    "kind": "play",
+                    "out_start_s": out_start,
+                    "out_end_s": out_start + seg.out_dur(),
+                    "src_start_s": src_start,
+                    "src_end_s": src_end,
+                    "rate": rate,
+                })
+            }
+            reel_timeline::Segment::Still { out_start, src_at, dur } => {
+                // A card is a still with words on it; name it as one.
+                let card = tl.cards().iter().find(|(a, _, _)| (a - out_start).abs() < 1e-6);
+                serde_json::json!({
+                    "kind": if card.is_some() { "card" } else { "still" },
+                    "out_start_s": out_start,
+                    "out_end_s": out_start + dur,
+                    "src_at_s": src_at,
+                    "text": card.map(|(_, _, t)| t.clone()),
+                })
+            }
+        })
+        .collect();
+
+    let markers: Vec<_> = loaded
+        .markers
+        .iter()
+        .map(|(label, src_t)| {
+            serde_json::json!({
+                "label": label,
+                "src_t_s": src_t,
+                "out_t_s": tl.project_snapped(*src_t),
+                // A marker inside a `cut` has no place on the edited clock.
+                "cut": tl.project(*src_t).is_none(),
+            })
+        })
+        .collect();
+
+    let mut by_kind = serde_json::Map::new();
+    let mut bump = |k: &str| {
+        let e = by_kind.entry(k.to_string()).or_insert(serde_json::json!(0));
+        *e = serde_json::json!(e.as_u64().unwrap_or(0) + 1);
+    };
+    for v in &loaded.visuals {
+        match v {
+            VisualOp::Zoom { .. } => bump("zoom"),
+            VisualOp::Pan { .. } => bump("pan"),
+            VisualOp::Caption { .. } => bump("caption"),
+            VisualOp::Highlight { .. } => bump("highlight"),
+            VisualOp::Note { .. } => bump("note"),
+            VisualOp::Key { .. } => bump("key"),
+        }
+    }
+    let keys = loaded.visuals.iter().filter(|v| matches!(v, VisualOp::Key { .. })).count();
+    let cfg = &loaded.file.config;
+
+    serde_json::json!({
+        "file": path.display().to_string(),
+        "cast": loaded.cast_path.display().to_string(),
+        "grid": { "cols": cast.cols(), "rows": cast.rows() },
+        "source": {
+            "duration_s": cast.duration(),
+            "events": cast.events.len(),
+            "snapshots": loaded.snapshots.len(),
+        },
+        "output": {
+            "duration_s": tl.out_duration(),
+            "file": cfg.output.file.clone(),
+            "template": cfg.template.name,
+            "budget": cfg.output.budget.clone(),
+        },
+        "timeline": segments,
+        "markers": markers,
+        "overlays": {
+            // Keystroke chips are one op per keypress: counted, but kept out
+            // of the total so "6 overlays" stays a number about authoring.
+            "total": loaded.visuals.len() - keys,
+            "keys": keys,
+            "by_kind": by_kind,
+        },
+    })
 }
 
 /// Watch-mode render: returns the encoded bytes (for the preview server)
@@ -1161,12 +1415,12 @@ fn print_warnings(warnings: &[String], quiet: bool) {
     }
 }
 
-fn done(path: &Path, quiet: bool) -> Result<()> {
+fn done(path: &Path, quiet: bool) -> Result<RenderReport> {
+    let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     if !quiet {
-        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-        eprintln!("{}: {}", path.display(), human_size(size));
+        eprintln!("{}: {}", path.display(), human_size(bytes));
     }
-    Ok(())
+    Ok(RenderReport { bytes, ..Default::default() })
 }
 
 pub fn human_size(bytes: u64) -> String {

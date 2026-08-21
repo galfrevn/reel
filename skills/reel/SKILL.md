@@ -69,6 +69,23 @@ user to install reel themselves from
 reel records, edits, and renders on its own; asciinema `.cast` files also
 work as input if the user already has one.
 
+## Driving reel from a script
+
+Every command takes `--json`: one JSON document on stdout, `{"error": "…"}`
+and exit 1 on failure, warnings and progress on stderr, and nothing that
+opens a viewer or waits on input. Prefer it whenever you're going to act on
+the output rather than show it — parsing reel's prose is unnecessary.
+
+```sh
+reel inspect demo.reel --json     # timeline, markers, overlays, durations
+reel suggest s.cast --json        # drafted ops, each with the reasoning
+reel render demo.reel --json      # path, bytes, frames, budget ladder
+reel record -o s.cast --json      # duration, grid, input events, markers
+```
+
+`reel llms` prints the whole CLI and `.reel` reference, condensed — read it
+if this file leaves you guessing about an operation's grammar.
+
 ## Workflow
 
 ### 1. Get a recording
@@ -123,9 +140,33 @@ If `inspect` lists **markers**, the user dropped them on purpose while
 recording — anchor your ops on them (`trim @1..@2`, `caption "…" at @done`)
 instead of hunting timestamps. See "Opt-in extras" below.
 
-`reel suggest session.cast --write demo.reel` drafts the edit script for you
-(trims, speed ramps over dead air) — a good starting point to tune rather
-than a finished edit.
+`reel suggest session.cast --write demo.reel` drafts the whole file for you
+and is the fastest way to a decent first render. It reads the recording and
+writes:
+
+- `trim` for the lead-in and the tail (including a typed `exit`);
+- `speed` ramps over each stretch of dead air;
+- `redact` for any secret on screen — do not remove these without checking;
+- `marker "payoff"` on the biggest burst of output after a wait, so you can
+  anchor your own ops on `@payoff`;
+- `zoom` on it when the result is compact enough to magnify without cropping;
+- a `freeze` at the end;
+- the `[template]` and `[output]` that suit the recording (chrome-less for a
+  TUI, WebM instead of GIF past ~20s), each with its reason in a comment.
+
+Two things to know before you trust it:
+
+- **Anything risky is written commented out**, with the reason on the line
+  above — today that means cutting a typo, since a cut landing mid-word
+  looks worse than the mistake. Read those, decide, uncomment. `--json`
+  reports them as ops with `"applied": false`.
+- It is a draft, not a finished edit. Tune the times, replace the `payoff`
+  marker's name with something meaningful, and add the captions or notes
+  that explain what the demo is doing — `suggest` never invents wording.
+
+`--json` gives every op with its reasoning (`kind`, `why`, `at_s`,
+`span_s`, `applied`) plus what it concluded about the recording, which is
+more useful to you than the rendered script.
 
 ### 3. Write the `.reel` file
 
@@ -268,6 +309,25 @@ Two `[style]` flags, both off by default:
   bottom of the frame. It answers "where does this loop restart?" for long
   GIFs. It costs frames: the bar is quantized to 120 steps, so it adds up
   to ~120 frames to the video. Check the reported size after turning it on.
+
+### Handing the demo to a motion-graphics tool
+
+`reel render demo.reel --frames-out frames/` writes a constant-rate PNG
+sequence plus `frames.json` — the edit as data: every marker, caption, card,
+zoom and speed ramp in output seconds *and* frame numbers, with the
+procedural soundtrack beside it as a synced `audio.wav`.
+
+Two reasons to reach for it, both only when the user asks:
+
+- **A launch video** that mixes the demo with animated titles or product
+  shots. That's a compositor's job, not reel's — see the `reel-motion`
+  skill, which covers the Remotion and NLE side.
+- **An MP4.** reel ships no H.264 encoder (licensing). The export prints the
+  exact `ffmpeg` line, and stores it in `frames.json`.
+
+Never use it as the default output: it's a lossless intermediate, so a
+12-second 1080p demo is tens of megabytes. A README wants `reel render
+demo.reel` and a GIF.
 
 ## Choosing a look
 
