@@ -822,6 +822,7 @@ mod tests {
                 cells: vec![Default::default(); 2],
                 cursor: reel_term::Cursor { col: 0, row: 0, shape: reel_term::CursorShape::Block },
                 palette_overrides: vec![],
+            default_overrides: [None; 3],
             images: vec![],
             })
             .collect()
@@ -848,6 +849,7 @@ mod tests {
                         shape: reel_term::CursorShape::Block,
                     },
                     palette_overrides: vec![],
+            default_overrides: [None; 3],
                     images: vec![],
                 }
             })
@@ -1087,7 +1089,7 @@ mod tests {
         assert!(peak < 1.2, "overshoot too violent, peak {peak}");
         assert!(anims.iter().all(|a| a.alpha <= 1.0), "alpha overshot with t");
         // It settles: somewhere in the middle it is exactly at rest.
-        assert!(anims.iter().any(|a| *a == Anim::SETTLED));
+        assert!(anims.contains(&Anim::SETTLED));
     }
 
     #[test]

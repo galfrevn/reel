@@ -50,10 +50,12 @@ fn load_with_source(
 ) -> Result<Loaded> {
     let base_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut file = if path.extension().is_some_and(|e| e == "cast") {
-        // Quick path: default styling straight from a recording.
+        // Quick path: default styling straight from a recording. The name is
+        // interpolated into TOML, so quotes/backslashes in it must be escaped.
+        let name = path.file_name().unwrap().to_string_lossy();
         let text = format!(
             "---\n[source]\ncast = \"{}\"\n---\n",
-            path.file_name().unwrap().to_string_lossy()
+            name.replace('\\', "\\\\").replace('"', "\\\"")
         );
         ReelFile::parse(&text)?
     } else {
@@ -168,7 +170,7 @@ fn mask_label(label: String, redactors: &[regex_lite::Regex]) -> String {
         let mut last = 0;
         for m in re.find_iter(&s) {
             out.push_str(&s[last..m.start()]);
-            out.extend(std::iter::repeat('•').take(s[m.start()..m.end()].chars().count()));
+            out.extend(std::iter::repeat_n('•', s[m.start()..m.end()].chars().count()));
             last = m.end();
         }
         out.push_str(&s[last..]);
@@ -229,10 +231,10 @@ fn render_each_parallel(
                 let mut i = k;
                 while i < plans.len() {
                     let f = &plans[i];
-                    let (w, h, rgba) = r.render_frame_rgba(&snapshots[f.snapshot], f);
                     let Ok(mut buf) = rrx.recv() else { return };
-                    buf.clear();
-                    buf.extend_from_slice(rgba);
+                    // Convert straight into the recycled buffer — no
+                    // intermediate full-canvas copy.
+                    let (w, h) = r.render_frame_rgba_into(&snapshots[f.snapshot], f, &mut buf);
                     if ftx.send((buf, w, h)).is_err() {
                         return; // main thread bailed
                     }
@@ -268,7 +270,9 @@ fn uniform_dims(snaps: &[Snapshot]) -> bool {
     snaps.windows(2).all(|w| w[0].cols == w[1].cols && w[0].rows == w[1].rows)
 }
 
-fn render_frames(loaded: &Loaded, cfg: &ReelConfig, quiet: bool) -> Result<(Vec<RgbaFrame>, Vec<String>)> {
+/// Renders only the first planned frame — for single-image outputs, which
+/// must not pay for the whole video.
+fn render_first_frame(loaded: &Loaded, cfg: &ReelConfig) -> Result<(RgbaFrame, Vec<String>)> {
     let (mut settings, mut warnings) = settings_from_config(cfg)?;
     settings.progress_ticks = progress_ticks(&loaded.timeline, &loaded.markers);
     let fps = settings.fps;
@@ -277,25 +281,25 @@ fn render_frames(loaded: &Loaded, cfg: &ReelConfig, quiet: bool) -> Result<(Vec<
     renderer.fit_exact(loaded.cast.cols(), loaded.cast.rows());
     warnings.extend(font_warnings);
     let frames = plan_frames(&loaded.timeline, &loaded.snapshots, &loaded.visuals, fps, &plan_opts);
-    if !quiet {
-        eprintln!(
-            "rendering {} frames ({:.1}s output from {:.1}s recording)…",
-            frames.len(),
-            loaded.timeline.out_duration(),
-            loaded.cast.duration()
-        );
-    }
-    let mut out = Vec::with_capacity(frames.len());
-    for f in &frames {
-        let pix = renderer.render_frame(&loaded.snapshots[f.snapshot], f);
-        out.push(RgbaFrame {
-            width: pix.width(),
-            height: pix.height(),
-            data: pixmap_to_rgba(&pix),
-            duration_s: f.dur,
-        });
-    }
-    Ok((out, warnings))
+    let f = frames.first().ok_or_else(|| anyhow!("no frames"))?;
+    let pix = renderer.render_frame(&loaded.snapshots[f.snapshot], f);
+    let frame = RgbaFrame {
+        width: pix.width(),
+        height: pix.height(),
+        data: pixmap_to_rgba(&pix),
+        duration_s: f.dur,
+    };
+    Ok((frame, warnings))
+}
+
+/// Writes an output artifact atomically: a Ctrl-C mid-write (or a watch-mode
+/// consumer reading the file) must never observe a truncated gif/webm.
+fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)
 }
 
 /// Renders a script-mode file over the cast `reel run` just captured.
@@ -362,10 +366,9 @@ fn dispatch_render(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: boo
     let result = match ext.as_str() {
         "gif" => render_gif(loaded, cfg.clone(), out_path, quiet),
         "png" => {
-            let (frames, warns) = render_frames(loaded, &cfg, quiet)?;
+            let (f, warns) = render_first_frame(loaded, &cfg)?;
             print_warnings(&warns, quiet);
-            let f = frames.first().ok_or_else(|| anyhow!("no frames"))?;
-            std::fs::write(out_path, reel_encode::encode_png(f.width, f.height, &f.data)?)?;
+            write_atomic(out_path, &reel_encode::encode_png(f.width, f.height, &f.data)?)?;
             done(out_path, quiet)
         }
         "txt" => {
@@ -374,7 +377,7 @@ fn dispatch_render(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: boo
                 text.push_str(&format!("--- t={:.3}s\n", s.src_time));
                 text.push_str(&s.to_text());
             }
-            std::fs::write(out_path, text)?;
+            write_atomic(out_path, text.as_bytes())?;
             done(out_path, quiet)
         }
         "apng" => render_apng(loaded, cfg.clone(), out_path, quiet),
@@ -388,7 +391,7 @@ fn dispatch_render(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: boo
     };
     if result.is_ok() && cfg.output.subtitles {
         let vtt_path = out_path.with_extension("vtt");
-        std::fs::write(&vtt_path, render_vtt(&caption_cues(loaded)))?;
+        write_atomic(&vtt_path, render_vtt(&caption_cues(loaded)).as_bytes())?;
         if !quiet {
             eprintln!("{}: WebVTT captions sidecar", vtt_path.display());
         }
@@ -435,7 +438,7 @@ fn render_apng(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
         })?;
         stream.finish()?
     };
-    std::fs::write(out_path, &bytes)?;
+    write_atomic(out_path, &bytes)?;
     if !quiet {
         eprintln!(
             "{}: {} — {} frames, lossless truecolor",
@@ -538,10 +541,32 @@ fn build_audio(
     Ok(Some(samples))
 }
 
+/// Loads the sidecar, warning (once per path) when one exists but is corrupt
+/// — otherwise typing reconstruction, key chips, and keystroke audio all
+/// vanish with no hint why.
+fn load_sidecar_warn(cast_path: &Path) -> Option<ReelMeta> {
+    match ReelMeta::load_sidecar_checked(cast_path) {
+        Ok(meta) => meta,
+        Err(e) => {
+            use std::collections::HashSet;
+            use std::sync::Mutex;
+            static WARNED: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
+            let mut warned = WARNED.lock().unwrap();
+            if warned.get_or_insert_with(HashSet::new).insert(cast_path.to_path_buf()) {
+                eprintln!(
+                    "warning: {e} — typing reconstruction, key chips, and keystroke \
+                     audio are disabled"
+                );
+            }
+            None
+        }
+    }
+}
+
 /// Raw input events in source time: the `.reelmeta` sidecar when `reel
 /// record` wrote one, else any "i" events an asciinema recording kept.
 fn raw_inputs(cast: &Cast, cast_path: &Path) -> Vec<(f64, String)> {
-    match ReelMeta::load_sidecar(cast_path) {
+    match load_sidecar_warn(cast_path) {
         Some(meta) if !meta.input_events.is_empty() => meta
             .input_events
             .into_iter()
@@ -573,7 +598,7 @@ fn printable_keys(cast: &Cast, cast_path: &Path) -> Vec<reel_term::KeyPress> {
 /// Keystrokes for the audio planner: the `.reelmeta` sidecar when `reel
 /// record` wrote one, else any "i" events an asciinema recording kept.
 fn key_inputs(cast: &Cast, cast_path: &Path) -> Vec<reel_audio::KeyInput> {
-    if let Some(meta) = ReelMeta::load_sidecar(cast_path) {
+    if let Some(meta) = load_sidecar_warn(cast_path) {
         if !meta.input_events.is_empty() {
             return meta
                 .input_events
@@ -720,7 +745,7 @@ fn render_webm(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) -
         let size = report.bytes.len() as u64;
         let fits = budget_bytes.map(|b| size <= b).unwrap_or(true);
         if fits || i == ladder.len() - 1 {
-            std::fs::write(out_path, &report.bytes)?;
+            write_atomic(out_path, &report.bytes)?;
             if !quiet {
                 eprintln!(
                     "{}: {} — {} frames, vp9 cq {} (cap {} kbps), {}{}",
@@ -855,7 +880,7 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
                 &mut bytes,
                 cw,
                 ch,
-                builder.finish(),
+                builder.finish().with_dither(step_cfg.output.dither),
                 step_cfg.output.looping,
             )?;
             render_each_parallel(r, &plans, &loaded.snapshots, |rgba, _, _, dur| {
@@ -867,7 +892,7 @@ fn render_gif(loaded: &Loaded, cfg: ReelConfig, out_path: &Path, quiet: bool) ->
 
         let fits = budget_bytes.map(|b| size <= b).unwrap_or(true);
         if fits || i == ladder.len() - 1 {
-            std::fs::write(out_path, &bytes)?;
+            write_atomic(out_path, &bytes)?;
             if !quiet {
                 let palette = match palette {
                     PaletteMode::Exact(n) => format!("exact {n}-color palette (lossless)"),
@@ -938,9 +963,9 @@ pub fn shot(path: &Path, at: &str, out: Option<PathBuf>, template: Option<String
 
     let pix = renderer.render_frame(&loaded.snapshots[frame.snapshot], frame);
     let out_path = out.unwrap_or_else(|| path.with_extension("png"));
-    std::fs::write(
+    write_atomic(
         &out_path,
-        reel_encode::encode_png(pix.width(), pix.height(), &pixmap_to_rgba(&pix))?,
+        &reel_encode::encode_png(pix.width(), pix.height(), &pixmap_to_rgba(&pix))?,
     )?;
     println!("{} (frame at {:.2}s)", out_path.display(), frame.out_t);
     Ok(())
@@ -1029,7 +1054,15 @@ pub fn render_for_watch(
         file.config.template.name = t;
     }
 
-    let cast_path = base_dir.join(&file.config.source.as_ref().unwrap().cast);
+    // Same contract as `load`: watch must report this, not panic — the
+    // watcher's whole promise is that it never dies mid-session.
+    let Some(source) = file.config.source.as_ref() else {
+        bail!(
+            "{} has no [source].cast — script-mode files run with `reel run`",
+            path.display()
+        );
+    };
+    let cast_path = base_dir.join(&source.cast);
     let mtime = std::fs::metadata(&cast_path)
         .and_then(|m| m.modified())
         .with_context(|| format!("stat {}", cast_path.display()))?;
@@ -1070,16 +1103,13 @@ pub fn render_for_watch(
     let renderer = cache.renderer.as_mut().unwrap();
 
     let frames = plan_frames(&timeline, snapshots, &visuals, fps, &plan_opts);
+    // Same parallel path as batch renders — watch is the mode whose whole
+    // promise is fast re-render, so it shouldn't be the single-threaded one.
     let mut rgba = Vec::with_capacity(frames.len());
-    for f in &frames {
-        let pix = renderer.render_frame(&snapshots[f.snapshot], f);
-        rgba.push(RgbaFrame {
-            width: pix.width(),
-            height: pix.height(),
-            data: pixmap_to_rgba(&pix),
-            duration_s: f.dur,
-        });
-    }
+    render_each_parallel(renderer, &frames, snapshots, |buf, w, h, dur| {
+        rgba.push(RgbaFrame { width: w, height: h, data: buf.to_vec(), duration_s: dur });
+        Ok(())
+    })?;
 
     let out_path = out
         .or_else(|| file.config.output.file.as_ref().map(|f| base_dir.join(f)))
@@ -1110,12 +1140,16 @@ pub fn render_for_watch(
         _ => {
             reel_encode::encode_gif(
                 &rgba,
-                &GifOptions { looping: file.config.output.looping, max_colors: 256 },
+                &GifOptions {
+                    looping: file.config.output.looping,
+                    max_colors: 256,
+                    dither: file.config.output.dither,
+                },
             )?
             .bytes
         }
     };
-    std::fs::write(&out_path, &bytes)?;
+    write_atomic(&out_path, &bytes)?;
     Ok(WatchRender { bytes, out_path, cast_path: cast_path.clone(), extension })
 }
 

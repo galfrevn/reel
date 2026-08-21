@@ -29,7 +29,26 @@ pub enum CastError {
     },
     #[error("event on line {line} has non-monotonic time {t} (previous {prev})")]
     NonMonotonic { line: usize, t: f64, prev: f64 },
+    #[error("event on line {line} has invalid time {t} (must be finite, 0..{MAX_TIME_S}s)")]
+    InvalidTime { line: usize, t: f64 },
+    #[error("header duration {0} is invalid (must be finite, 0..{MAX_TIME_S}s)")]
+    InvalidDuration(f64),
+    #[error("invalid sidecar {path}: {source}")]
+    Sidecar {
+        path: String,
+        #[source]
+        source: serde_json::Error,
+    },
 }
+
+/// Upper bound on event times and header duration. Times from a cast flow
+/// into buffer allocations and frame counts downstream, so an absurd value
+/// must die here rather than as an OOM in the mixer or encoder.
+pub const MAX_TIME_S: f64 = 86_400.0;
+
+/// Recorders occasionally emit sub-frame backwards jitter; clamp it instead
+/// of rejecting the file. Anything larger is treated as real corruption.
+const JITTER_CLAMP_S: f64 = 0.010;
 
 /// The asciinema v2 header (first line of the file). Fields we don't use are
 /// preserved so a cast can round-trip through reel unchanged.
@@ -101,6 +120,11 @@ impl Cast {
         if header.version != 2 {
             return Err(CastError::Version(header.version));
         }
+        if let Some(d) = header.duration {
+            if !d.is_finite() || !(0.0..=MAX_TIME_S).contains(&d) {
+                return Err(CastError::InvalidDuration(d));
+            }
+        }
 
         let mut events = Vec::new();
         let mut prev_t = 0.0f64;
@@ -111,9 +135,18 @@ impl Cast {
             let raw: (f64, String, String) = serde_json::from_str(line)
                 .map_err(|source| CastError::Event { line: idx + 1, source })?;
             let (time, code, data) = raw;
-            if time < prev_t {
-                return Err(CastError::NonMonotonic { line: idx + 1, t: time, prev: prev_t });
+            if !time.is_finite() || !(0.0..=MAX_TIME_S).contains(&time) {
+                return Err(CastError::InvalidTime { line: idx + 1, t: time });
             }
+            let time = if time < prev_t {
+                if prev_t - time <= JITTER_CLAMP_S {
+                    prev_t
+                } else {
+                    return Err(CastError::NonMonotonic { line: idx + 1, t: time, prev: prev_t });
+                }
+            } else {
+                time
+            };
             prev_t = time;
             let kind = match code.as_str() {
                 "o" => EventKind::Output,
@@ -168,8 +201,25 @@ pub struct InputEvent {
 impl ReelMeta {
     /// Loads `<cast>.reelmeta` next to a cast file if it exists.
     pub fn load_sidecar(cast_path: &Path) -> Option<Self> {
-        let text = std::fs::read_to_string(sidecar_path(cast_path)).ok()?;
-        serde_json::from_str(&text).ok()
+        Self::load_sidecar_checked(cast_path).ok().flatten()
+    }
+
+    /// Like [`load_sidecar`](Self::load_sidecar), but a sidecar that exists
+    /// and fails to parse is an error rather than a silent `None` — callers
+    /// can warn instead of quietly dropping typing/audio reconstruction.
+    pub fn load_sidecar_checked(cast_path: &Path) -> Result<Option<Self>, CastError> {
+        let path = sidecar_path(cast_path);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => {
+                return Err(CastError::Io { path: path.display().to_string(), source })
+            }
+        };
+        serde_json::from_str(&text).map(Some).map_err(|source| CastError::Sidecar {
+            path: path.display().to_string(),
+            source,
+        })
     }
 
     /// Writes the sidecar next to its cast.
@@ -208,6 +258,12 @@ impl<W: std::io::Write> CastWriter<W> {
         let line =
             serde_json::to_string(&(time, code, data)).expect("event serializes");
         writeln!(self.out, "{line}")?;
+        self.out.flush()
+    }
+
+    /// Flushes without consuming — for writers shared behind an `Arc` where
+    /// detached reader threads still hold clones at shutdown.
+    pub fn flush(&mut self) -> std::io::Result<()> {
         self.out.flush()
     }
 
@@ -256,6 +312,47 @@ mod tests {
     }
 
     #[test]
+    fn clamps_subframe_jitter_but_rejects_real_regressions() {
+        let jitter = r#"{"version": 2, "width": 80, "height": 24}
+[1.0, "o", "a"]
+[0.995, "o", "b"]
+"#;
+        let cast = Cast::parse(jitter).unwrap();
+        assert!((cast.events[1].time - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rejects_absurd_times_and_durations() {
+        for bad in ["1e15", "-1.0", "NaN"] {
+            let text = format!(
+                "{{\"version\": 2, \"width\": 80, \"height\": 24}}\n[{bad}, \"o\", \"x\"]\n"
+            );
+            let err = Cast::parse(&text);
+            assert!(
+                matches!(err, Err(CastError::InvalidTime { .. }) | Err(CastError::Event { .. })),
+                "time {bad} must not parse: {err:?}"
+            );
+        }
+        let err = Cast::parse(r#"{"version": 2, "width": 80, "height": 24, "duration": 1e15}"#);
+        assert!(matches!(err, Err(CastError::InvalidDuration(_))));
+    }
+
+    #[test]
+    fn corrupt_sidecar_is_an_error_not_a_silent_none() {
+        let dir = std::env::temp_dir().join("reel-cast-test-corrupt");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cast_path = dir.join("s.cast");
+        std::fs::write(dir.join("s.cast.reelmeta"), "{ not json").unwrap();
+        assert!(matches!(
+            ReelMeta::load_sidecar_checked(&cast_path),
+            Err(CastError::Sidecar { .. })
+        ));
+        assert!(ReelMeta::load_sidecar(&cast_path).is_none());
+        let missing = dir.join("missing.cast");
+        assert!(ReelMeta::load_sidecar_checked(&missing).unwrap().is_none());
+    }
+
+    #[test]
     fn writer_roundtrips_through_the_parser() {
         let header = CastHeader {
             version: 2,
@@ -300,6 +397,36 @@ mod tests {
         assert_eq!(loaded.input_events.len(), 1);
         assert_eq!(loaded.input_events[0].value, "a");
         assert_eq!(loaded.cols, 80);
+    }
+
+    #[test]
+    fn mutated_casts_never_panic() {
+        // Deterministic mutation smoke test: every byte-level corruption of
+        // a valid cast must produce Ok or Err — never a panic. (xorshift64*,
+        // seeded, so failures reproduce.)
+        let mut state = 0x9E3779B97F4A7C15u64;
+        let mut rng = move || {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state.wrapping_mul(0x2545F4914F6CDD1D)
+        };
+        let base = SAMPLE.as_bytes();
+        for _ in 0..500 {
+            let mut bytes = base.to_vec();
+            for _ in 0..(rng() % 8 + 1) {
+                let i = (rng() % bytes.len() as u64) as usize;
+                match rng() % 3 {
+                    0 => bytes[i] = (rng() >> 56) as u8,
+                    1 => {
+                        bytes.remove(i);
+                    }
+                    _ => bytes.insert(i, (rng() >> 56) as u8),
+                }
+            }
+            let text = String::from_utf8_lossy(&bytes);
+            let _ = Cast::parse(&text); // Ok or Err both fine; panic is the bug
+        }
     }
 
     #[test]

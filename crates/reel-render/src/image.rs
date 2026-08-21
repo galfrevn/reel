@@ -44,7 +44,7 @@ pub fn load(path: &str, base: Option<&Path>) -> Result<LoadedImage, String> {
         .map_err(|e| format!("decoding image `{}`: {e}", resolved.display()))?;
     let mut pix =
         Pixmap::new(w, h).ok_or_else(|| format!("image `{path}` has a zero dimension"))?;
-    for (i, px) in rgba.chunks_exact(4).enumerate() {
+    for (i, px) in rgba.as_chunks::<4>().0.iter().enumerate() {
         let a = px[3] as u16;
         let pm = |v: u8| ((v as u16 * a) / 255) as u8;
         pix.pixels_mut()[i] = PremultipliedColorU8::from_rgba(pm(px[0]), pm(px[1]), pm(px[2]), px[3])
@@ -72,10 +72,12 @@ fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
     buf.truncate(info.buffer_size());
     let rgba = match info.color_type {
         png::ColorType::Rgba => buf,
-        png::ColorType::Rgb => buf.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+        png::ColorType::Rgb => {
+            buf.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect()
+        }
         png::ColorType::Grayscale => buf.iter().flat_map(|&v| [v, v, v, 255]).collect(),
         png::ColorType::GrayscaleAlpha => {
-            buf.chunks_exact(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect()
+            buf.as_chunks::<2>().0.iter().flat_map(|p| [p[0], p[0], p[0], p[1]]).collect()
         }
         other => return Err(format!("unsupported png color type {other:?}")),
     };
@@ -89,7 +91,7 @@ fn decode_jpeg(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
     let (w, h) = (info.width as u32, info.height as u32);
     let rgba = match info.pixel_format {
         jpeg_decoder::PixelFormat::RGB24 => {
-            pixels.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect()
+            pixels.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect()
         }
         jpeg_decoder::PixelFormat::L8 => pixels.iter().flat_map(|&v| [v, v, v, 255]).collect(),
         other => return Err(format!("unsupported jpeg pixel format {other:?}")),

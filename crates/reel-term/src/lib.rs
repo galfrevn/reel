@@ -67,6 +67,12 @@ bitflags::bitflags! {
         const WIDE          = 1 << 7;
         /// Spacer cell following a double-width character; never drawn.
         const WIDE_SPACER   = 1 << 8;
+        /// Wavy underline (helix/neovim diagnostics). Drawn as a curl, not
+        /// flattened to a straight rule.
+        const UNDERCURL     = 1 << 9;
+        const DOUBLE_UNDERLINE = 1 << 10;
+        const DOTTED_UNDERLINE = 1 << 11;
+        const DASHED_UNDERLINE = 1 << 12;
     }
 }
 
@@ -89,6 +95,9 @@ pub enum CursorShape {
     Block,
     Underline,
     Beam,
+    /// Unfocused-terminal outline. Drawn as a stroked cell, so it doesn't
+    /// obscure the glyph under it the way a filled block would.
+    Hollow,
     Hidden,
 }
 
@@ -111,6 +120,9 @@ pub struct Snapshot {
     pub cursor: Cursor,
     /// Palette slots the application overrode via OSC 4, as (index, rgb).
     pub palette_overrides: Vec<(u8, (u8, u8, u8))>,
+    /// Dynamic default colors set via OSC 10/11/12 (fg, bg, cursor). A vim
+    /// colorscheme's background must render, not the template theme's.
+    pub default_overrides: [Option<(u8, u8, u8)>; 3],
     /// Sixel / kitty-protocol images visible in this frame (experimental).
     pub images: Vec<graphics::PlacedImage>,
 }
@@ -158,6 +170,11 @@ impl Snapshot {
         mix(self.cursor.shape as u64);
         for (i, (r, g, b)) in &self.palette_overrides {
             mix(*i as u64 | (*r as u64) << 8 | (*g as u64) << 16 | (*b as u64) << 24);
+        }
+        for (i, c) in self.default_overrides.iter().enumerate() {
+            if let Some((r, g, b)) = c {
+                mix((0x100 + i as u64) | (*r as u64) << 8 | (*g as u64) << 16 | (*b as u64) << 24);
+            }
         }
         h
     }
@@ -306,6 +323,12 @@ pub fn replay(cast: &Cast) -> Result<Vec<Snapshot>, TermError> {
             }
             EventKind::Resize => {
                 if let Some((c, r)) = parse_resize(&ev.data) {
+                    // Resize events come from the same untrusted file as the
+                    // header and get the same cap — an unchecked 65535x65535
+                    // here allocates a multi-GB grid.
+                    if c > 1000 || r > 500 || c == 0 || r == 0 {
+                        return Err(TermError::TooLarge(c, r));
+                    }
                     term.resize(GridSize { cols: c as usize, rows: r as usize });
                 }
             }
@@ -387,8 +410,25 @@ fn take_snapshot<L: EventListener>(term: &Term<L>, src_time: f64) -> Snapshot {
             palette_overrides.push((i as u8, (rgb.r, rgb.g, rgb.b)));
         }
     }
+    // Alacritty stores the OSC 10/11/12 dynamic defaults right after the
+    // 256-color palette.
+    let named = |i: usize| colors[i].map(|rgb| (rgb.r, rgb.g, rgb.b));
+    let default_overrides = [
+        named(NamedColor::Foreground as usize),
+        named(NamedColor::Background as usize),
+        named(NamedColor::Cursor as usize),
+    ];
 
-    Snapshot { src_time, cols, rows, cells, cursor, palette_overrides, images: Vec::new() }
+    Snapshot {
+        src_time,
+        cols,
+        rows,
+        cells,
+        cursor,
+        palette_overrides,
+        default_overrides,
+        images: Vec::new(),
+    }
 }
 
 fn cursor_state<L: EventListener>(term: &Term<L>) -> Cursor {
@@ -401,7 +441,7 @@ fn cursor_state<L: EventListener>(term: &Term<L>) -> Cursor {
             AnsiCursorShape::Block => CursorShape::Block,
             AnsiCursorShape::Underline => CursorShape::Underline,
             AnsiCursorShape::Beam => CursorShape::Beam,
-            AnsiCursorShape::HollowBlock => CursorShape::Block,
+            AnsiCursorShape::HollowBlock => CursorShape::Hollow,
             AnsiCursorShape::Hidden => CursorShape::Hidden,
         }
     };
@@ -453,10 +493,10 @@ fn convert_flags(f: TermFlags) -> CellAttrs {
         (TermFlags::HIDDEN, CellAttrs::HIDDEN),
         (TermFlags::STRIKEOUT, CellAttrs::STRIKEOUT),
         (TermFlags::UNDERLINE, CellAttrs::UNDERLINE),
-        (TermFlags::DOUBLE_UNDERLINE, CellAttrs::UNDERLINE),
-        (TermFlags::UNDERCURL, CellAttrs::UNDERLINE),
-        (TermFlags::DOTTED_UNDERLINE, CellAttrs::UNDERLINE),
-        (TermFlags::DASHED_UNDERLINE, CellAttrs::UNDERLINE),
+        (TermFlags::DOUBLE_UNDERLINE, CellAttrs::DOUBLE_UNDERLINE),
+        (TermFlags::UNDERCURL, CellAttrs::UNDERCURL),
+        (TermFlags::DOTTED_UNDERLINE, CellAttrs::DOTTED_UNDERLINE),
+        (TermFlags::DASHED_UNDERLINE, CellAttrs::DASHED_UNDERLINE),
         (TermFlags::WIDE_CHAR, CellAttrs::WIDE),
         (TermFlags::WIDE_CHAR_SPACER, CellAttrs::WIDE_SPACER),
         (TermFlags::LEADING_WIDE_CHAR_SPACER, CellAttrs::WIDE_SPACER),
@@ -476,6 +516,36 @@ mod tests {
     fn cast(body: &str) -> Cast {
         let text = format!("{}\n{}", r#"{"version": 2, "width": 20, "height": 4}"#, body);
         Cast::parse(&text).unwrap()
+    }
+
+    #[test]
+    fn osc_dynamic_default_colors_are_captured() {
+        let c = cast(r#"[0.1, "o", "\u001b]11;rgb:11/22/33\u0007\u001b]10;rgb:aa/bb/cc\u0007hi"]"#);
+        let snaps = replay(&c).unwrap();
+        let last = snaps.last().unwrap();
+        assert_eq!(last.default_overrides[0], Some((0xaa, 0xbb, 0xcc)), "OSC 10 fg");
+        assert_eq!(last.default_overrides[1], Some((0x11, 0x22, 0x33)), "OSC 11 bg");
+        // And a plain cast keeps the theme's defaults.
+        let plain = replay(&cast(r#"[0.1, "o", "hi"]"#)).unwrap();
+        assert_eq!(plain.last().unwrap().default_overrides, [None; 3]);
+    }
+
+    #[test]
+    fn underline_kinds_survive_conversion() {
+        let c = cast(r#"[0.1, "o", "\u001b[4:3mcurl\u001b[0m \u001b[4:2mdouble\u001b[0m"]"#);
+        let snaps = replay(&c).unwrap();
+        let last = snaps.last().unwrap();
+        assert!(last.cell(0, 0).attrs.contains(CellAttrs::UNDERCURL));
+        assert!(!last.cell(0, 0).attrs.contains(CellAttrs::UNDERLINE));
+        assert!(last.cell(5, 0).attrs.contains(CellAttrs::DOUBLE_UNDERLINE));
+    }
+
+    #[test]
+    fn oversized_resize_events_are_rejected() {
+        let c = cast(r#"[0.1, "r", "65535x65535"]"#);
+        assert!(matches!(replay(&c), Err(TermError::TooLarge(_, _))));
+        let c = cast(r#"[0.1, "r", "0x0"]"#);
+        assert!(matches!(replay(&c), Err(TermError::TooLarge(_, _))));
     }
 
     #[test]

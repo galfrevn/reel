@@ -902,7 +902,7 @@ pub fn to_toml(t: &Template) -> String {
                     CursorShape::Block => "block",
                     CursorShape::Beam => "beam",
                     CursorShape::Underline => "underline",
-                    CursorShape::Hidden => "block",
+                    CursorShape::Hollow | CursorShape::Hidden => "block",
                 }
                 .to_string()
             }),

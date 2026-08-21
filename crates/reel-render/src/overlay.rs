@@ -75,14 +75,17 @@ pub fn cell_to_canvas(
 
 /// Greedy wrap at `max_chars`, breaking on spaces and keeping explicit
 /// newlines. Monospace, so character count is width.
-pub fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
-    let max = max_chars.max(1);
+pub fn wrap_text(text: &str, max_cells: usize) -> Vec<String> {
+    // Widths are display cells (emoji/CJK count double), matching how the
+    // draw side advances the pen — a caption of wide chars must not
+    // overflow its pill.
+    let max = max_cells.max(1);
     let mut out = Vec::new();
     for para in text.split('\n') {
         let mut line = String::new();
         let mut len = 0;
         for word in para.split_whitespace() {
-            let wl = word.chars().count();
+            let wl = crate::text_cells(word) as usize;
             if len > 0 && len + 1 + wl > max {
                 out.push(std::mem::take(&mut line));
                 len = 0;
@@ -94,12 +97,12 @@ pub fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
             // A single word longer than the line gets hard-split.
             if wl > max {
                 for ch in word.chars() {
-                    if len == max {
+                    if len >= max {
                         out.push(std::mem::take(&mut line));
                         len = 0;
                     }
                     line.push(ch);
-                    len += 1;
+                    len += crate::char_cells(ch) as usize;
                 }
             } else {
                 line.push_str(word);
@@ -139,7 +142,7 @@ pub fn draw_note(
     let (cw, ch) = (canvas.width() as f32, canvas.height() as f32);
     let max_chars = ((cw * 0.4 / m.cell_w) as usize).clamp(12, 38);
     let lines = wrap_text(&note.text, max_chars);
-    let widest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let widest = lines.iter().map(|l| crate::text_cells(l) as usize).max().unwrap_or(0);
 
     let pad_x = 15.0 * s;
     let pad_y = 11.0 * s;
@@ -368,7 +371,7 @@ pub fn draw_card(
     for (i, line) in lines.iter().enumerate() {
         let stagger = (t - i as f32 * 0.12).clamp(0.0, 1.0);
         let rise = (1.0 - ease_out(stagger)) * 26.0 * s;
-        let w = line.chars().count() as f32 * m.cell_w;
+        let w = crate::text_cells(line) * m.cell_w;
         crate::draw_text(
             raster,
             canvas,
@@ -424,7 +427,7 @@ pub fn draw_rate_badge(
     let m = raster.fonts.cell_metrics(size, 1.0);
     let pad_x = 9.0 * s;
     let pad_y = 5.0 * s;
-    let w = label.chars().count() as f32 * m.cell_w + pad_x * 2.0;
+    let w = crate::text_cells(&label) * m.cell_w + pad_x * 2.0;
     let h = m.cell_h + pad_y * 2.0;
     let margin = 14.0 * s;
     // It belongs to the ramp, so it arrives with it instead of popping.

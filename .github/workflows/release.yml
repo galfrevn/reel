@@ -8,7 +8,29 @@ permissions:
   contents: write
 
 jobs:
+  # A tag on a broken commit must not ship; a v0.2.0 tag must not ship a
+  # binary that reports 0.1.1.
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install libvpx + fonts
+        run: sudo apt-get update && sudo apt-get install -y libvpx-dev libclang-dev fonts-dejavu fonts-noto-core fonts-powerline
+      - name: Tag matches the workspace version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ "$tag" != "$version" ]; then
+            echo "tag v$tag does not match workspace version $version" >&2
+            exit 1
+          fi
+      - name: Test
+        run: cargo test --workspace
+
   build:
+    needs: gate
     strategy:
       matrix:
         include:
@@ -39,11 +61,28 @@ jobs:
           VPX_STATIC: "1"
         run: cargo build --release --target ${{ matrix.target }} -p reel-cli
 
-      - name: Package
+      - name: Assert the single-file promise (no dynamic libvpx)
+        run: |
+          bin=target/${{ matrix.target }}/release/reel
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            deps=$(otool -L "$bin")
+          else
+            deps=$(ldd "$bin")
+          fi
+          echo "$deps"
+          if echo "$deps" | grep -qi libvpx; then
+            echo "released binary links libvpx dynamically" >&2
+            exit 1
+          fi
+
+      - name: Package + checksum
         run: |
           cd target/${{ matrix.target }}/release
           tar -czf reel-${{ matrix.target }}.tar.gz reel
+          shasum -a 256 reel-${{ matrix.target }}.tar.gz > reel-${{ matrix.target }}.tar.gz.sha256
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
-          files: target/${{ matrix.target }}/release/reel-${{ matrix.target }}.tar.gz
+          files: |
+            target/${{ matrix.target }}/release/reel-${{ matrix.target }}.tar.gz
+            target/${{ matrix.target }}/release/reel-${{ matrix.target }}.tar.gz.sha256

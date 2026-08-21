@@ -80,6 +80,13 @@ pub struct CellMetrics {
     pub cell_h: f32,
     /// Distance from cell top to the text baseline.
     pub baseline: f32,
+    /// Underline top, from cell top — the font's own metric when it has
+    /// one, so the rule clears descenders instead of colliding with them.
+    pub underline_y: f32,
+    /// Strikeout top, from cell top.
+    pub strikeout_y: f32,
+    /// Recommended underline/strikeout thickness.
+    pub line_thickness: f32,
 }
 
 pub struct FontSet {
@@ -89,6 +96,10 @@ pub struct FontSet {
     primary: [FaceSlot; 4],
     /// char → face that has it, discovered lazily; None = tofu everywhere.
     char_slots: HashMap<char, Option<FaceSlot>>,
+    /// (char, variant) → resolved (face, glyph id). The uncached resolve
+    /// re-parses the font's table directory and walks its cmap — per cell,
+    /// per frame, that alone was millions of parses per minute of video.
+    glyph_memo: HashMap<(char, u8), Option<(FaceSlot, u16)>>,
     /// fontdb faces already loaded (or that failed to load), so repeated
     /// loads don't repeat work. Only *matching* faces are ever retained —
     /// candidate files are parsed temporarily and dropped, because keeping
@@ -103,8 +114,18 @@ impl FontSet {
     /// Loads the system font database and resolves the primary family.
     /// Returns the set plus a warning when `preferred` wasn't found.
     pub fn system(preferred: Option<&str>) -> Result<(Self, Option<String>), String> {
-        let mut db = fontdb::Database::new();
-        db.load_system_fonts();
+        // Scanning the installed fonts costs 100ms+ on a typical macOS; a
+        // parallel render builds one renderer per worker per pass, so the
+        // scan happens exactly once per process and workers clone the
+        // (much smaller) metadata. Project-local fonts still load fresh.
+        static SYSTEM_DB: std::sync::OnceLock<fontdb::Database> = std::sync::OnceLock::new();
+        let mut db = SYSTEM_DB
+            .get_or_init(|| {
+                let mut db = fontdb::Database::new();
+                db.load_system_fonts();
+                db
+            })
+            .clone();
         // reel's own fonts dir wins for project-local fonts (no system
         // install needed) — e.g. `~/.config/reel/fonts/GeistMono-*.ttf`.
         if let Some(dir) = crate::paths::fonts_dir() {
@@ -118,6 +139,7 @@ impl FontSet {
             faces: Vec::new(),
             primary: [0; 4],
             char_slots: HashMap::new(),
+            glyph_memo: HashMap::new(),
             scanned: HashMap::new(),
             scan_order: Vec::new(),
         };
@@ -227,6 +249,9 @@ impl FontSet {
         let italic = slot_for(self, fontdb::Weight::NORMAL, fontdb::Style::Italic);
         let bold_italic = slot_for(self, fontdb::Weight::BOLD, fontdb::Style::Italic);
         self.primary = [regular, bold, italic, bold_italic];
+        // Memoized resolutions start from the primary slots; a new primary
+        // family invalidates them all.
+        self.glyph_memo.clear();
         Ok(warning)
     }
 
@@ -260,7 +285,18 @@ impl FontSet {
 
     /// Maps a char to (face, glyph): primary variant → primary regular →
     /// already-loaded fallbacks → lazy scan of remaining installed faces.
+    /// Memoized — the resolve below re-parses font tables per call.
     pub fn glyph(&mut self, ch: char, v: Variant) -> Option<(FaceSlot, u16)> {
+        let memo_key = (ch, v as u8);
+        if let Some(&hit) = self.glyph_memo.get(&memo_key) {
+            return hit;
+        }
+        let resolved = self.glyph_uncached(ch, v);
+        self.glyph_memo.insert(memo_key, resolved);
+        resolved
+    }
+
+    fn glyph_uncached(&mut self, ch: char, v: Variant) -> Option<(FaceSlot, u16)> {
         for slot in [self.primary_slot(v), self.primary_slot(Variant::Regular)] {
             let id = self.font(slot).charmap().map(ch);
             if id != 0 {
@@ -320,7 +356,25 @@ impl FontSet {
         let cell_h = (font_size * line_height).max(natural).round();
         // Center the natural line box inside the (usually taller) cell.
         let baseline = ((cell_h - natural) / 2.0 + m.ascent).round();
-        CellMetrics { cell_w, cell_h, baseline }
+        // Underline/strikeout from the font's own metrics (y-up, relative
+        // to the baseline: underline offsets run negative), falling back to
+        // the old heuristics for fonts that carry zeros.
+        let line_thickness = if m.stroke_size > 0.0 {
+            m.stroke_size.max(1.0)
+        } else {
+            (font_size / 14.0).max(1.0)
+        };
+        let underline_y = if m.underline_offset != 0.0 {
+            (baseline - m.underline_offset).min(cell_h - line_thickness)
+        } else {
+            baseline + (font_size * 0.11).max(1.5)
+        };
+        let strikeout_y = if m.strikeout_offset > 0.0 {
+            baseline - m.strikeout_offset
+        } else {
+            baseline - font_size * 0.3
+        };
+        CellMetrics { cell_w, cell_h, baseline, underline_y, strikeout_y, line_thickness }
     }
 
     /// The family reel actually resolved (for logs and error messages).

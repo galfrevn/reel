@@ -46,6 +46,23 @@ pub struct Theme {
 }
 
 impl Theme {
+    /// A copy of the theme with a snapshot's OSC 10/11/12 dynamic default
+    /// colors applied (fg, bg, cursor) — a vim colorscheme that sets the
+    /// terminal background must render on it, not on the template theme's.
+    pub fn with_defaults(&self, defaults: &[Option<(u8, u8, u8)>; 3]) -> Theme {
+        let mut t = self.clone();
+        if let Some((r, g, b)) = defaults[0] {
+            t.fg = Rgba::rgb(r, g, b);
+        }
+        if let Some((r, g, b)) = defaults[1] {
+            t.bg = Rgba::rgb(r, g, b);
+        }
+        if let Some((r, g, b)) = defaults[2] {
+            t.cursor = Rgba::rgb(r, g, b);
+        }
+        t
+    }
+
     /// Resolves an abstract cell color. `overrides` are the snapshot's OSC 4
     /// palette redefinitions.
     pub fn resolve(&self, c: ColorRef, overrides: &[(u8, (u8, u8, u8))]) -> Rgba {

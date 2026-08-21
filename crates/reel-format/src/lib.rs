@@ -119,11 +119,25 @@ pub struct OutputCfg {
     /// Write captions as real subtitles too: a WebVTT sidecar next to the
     /// output, plus an in-band text track in .webm output.
     pub subtitles: bool,
+    /// Ordered (Bayer) dithering when a GIF palette has to quantize —
+    /// trades a little grain for the banding rings gradients get. Opt-in:
+    /// it grows file size, and exact-palette renders never need it.
+    pub dither: bool,
 }
 
 impl Default for OutputCfg {
     fn default() -> Self {
-        OutputCfg { file: None, looping: true, budget: None, fps: None, scale: 2, aspect: None, size: None, subtitles: false }
+        OutputCfg {
+            file: None,
+            looping: true,
+            budget: None,
+            fps: None,
+            scale: 2,
+            aspect: None,
+            size: None,
+            subtitles: false,
+            dither: false,
+        }
     }
 }
 

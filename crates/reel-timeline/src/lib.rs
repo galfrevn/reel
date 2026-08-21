@@ -271,7 +271,9 @@ impl Timeline {
 
     /// Output time → source time. Clamps outside [0, out_duration].
     pub fn sample(&self, out_t: f64) -> f64 {
-        let out_t = out_t.clamp(0.0, self.out_duration);
+        // max/min instead of clamp: a degenerate timeline (out_duration 0 or
+        // below) must sample as t=0, not panic on an inverted clamp range.
+        let out_t = out_t.max(0.0).min(self.out_duration.max(0.0));
         let idx = match self
             .segments
             .binary_search_by(|s| s.out_start().total_cmp(&out_t))

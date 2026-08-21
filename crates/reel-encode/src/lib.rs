@@ -135,7 +135,14 @@ impl WebmEncoder {
                         let jn = (j + hold).min(ticks.len());
                         let pts = tick_ms(ticks[j]);
                         let dur = (tick_ms(ticks[jn - 1] + 1) - pts).max(1) as u64;
-                        self.blocks.extend(self.enc.encode(&self.i420, pts, dur)?);
+                        if j == 0 {
+                            self.blocks.extend(self.enc.encode(&self.i420, pts, dur)?);
+                        } else {
+                            // Same image re-held: skip the plane copies. The
+                            // deadline stays GOOD_QUALITY — realtime trashes
+                            // VP9's rate control here (20x larger output).
+                            self.blocks.extend(self.enc.encode_repeat(pts, dur)?);
+                        }
                         j = jn;
                     }
                 }
@@ -299,11 +306,13 @@ pub struct GifOptions {
     /// Maximum palette size (2-256). The exact-palette path uses however many
     /// colors the frames actually contain, up to this.
     pub max_colors: u16,
+    /// Ordered dithering on the quantized path (see [`GifPalette::with_dither`]).
+    pub dither: bool,
 }
 
 impl Default for GifOptions {
     fn default() -> Self {
-        GifOptions { looping: true, max_colors: 256 }
+        GifOptions { looping: true, max_colors: 256, dither: false }
     }
 }
 
@@ -432,7 +441,7 @@ impl GifPaletteBuilder {
         // Terminal frames are long runs of one color; remembering the last
         // pixel skips the map for most of the frame.
         let mut last = u32::MAX;
-        for px in rgba.chunks_exact(4) {
+        for px in rgba.as_chunks::<4>().0 {
             let key = pack_rgb(px);
             if self.exact && key != last && self.colors.get(key).is_none() {
                 if self.colors.len() >= self.max_colors as usize {
@@ -449,14 +458,19 @@ impl GifPaletteBuilder {
                 if self.samples.len() / 4 > MAX_QUANT_SAMPLES {
                     // Keep every other sample and halve the intake rate.
                     let mut keep = Vec::with_capacity(self.samples.len() / 2);
-                    for pair in self.samples.chunks_exact(8) {
+                    for pair in self.samples.as_chunks::<8>().0 {
                         keep.extend_from_slice(&pair[..4]);
                     }
                     self.samples = keep;
                     self.stride *= 2;
                 }
             }
-            self.phase = (self.phase + 1) % self.stride;
+            // Countdown instead of modulo: an integer div per pixel is the
+            // hottest instruction in this whole pass.
+            self.phase += 1;
+            if self.phase >= self.stride {
+                self.phase = 0;
+            }
         }
     }
 
@@ -470,7 +484,12 @@ impl GifPaletteBuilder {
                 rgb[o + 2] = key as u8;
             }
             let n = self.colors.len() as u16;
-            GifPalette { rgb, mode: PaletteMode::Exact(n), lookup: Lookup::Exact(self.colors) }
+            GifPalette {
+                rgb,
+                mode: PaletteMode::Exact(n),
+                lookup: Lookup::Exact(self.colors),
+                dither: false,
+            }
         } else {
             let nq = color_quant::NeuQuant::new(10, self.max_colors as usize, &self.samples);
             let rgb = nq.color_map_rgb();
@@ -481,6 +500,7 @@ impl GifPaletteBuilder {
                 // index_of is a search; terminal frames repeat a few
                 // thousand distinct RGBs, so memoizing makes it ~free.
                 lookup: Lookup::Quant { nq, memo: ColorMap::new() },
+                dither: false,
             }
         }
     }
@@ -490,7 +510,11 @@ pub struct GifPalette {
     rgb: Vec<u8>,
     mode: PaletteMode,
     lookup: Lookup,
+    dither: bool,
 }
+
+/// 4x4 Bayer threshold matrix for ordered dithering.
+const BAYER4: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
 
 enum Lookup {
     Exact(ColorMap),
@@ -498,18 +522,37 @@ enum Lookup {
 }
 
 impl GifPalette {
-    fn index(&mut self, px: &[u8]) -> u8 {
+    /// Enables ordered dithering when this palette has to quantize —
+    /// gradients band into visible rings without it. Bayer (screen-space,
+    /// deterministic) rather than error diffusion, so identical stills
+    /// still produce identical indices and the delta rects survive.
+    pub fn with_dither(mut self, on: bool) -> Self {
+        self.dither = on;
+        self
+    }
+
+    fn index(&mut self, px: &[u8], x: usize, y: usize) -> u8 {
         let key = pack_rgb(px);
         match &mut self.lookup {
             Lookup::Exact(map) => map.get(key).unwrap_or(0),
-            Lookup::Quant { nq, memo } => match memo.get(key) {
-                Some(i) => i,
-                None => {
-                    let i = nq.index_of(&[px[0], px[1], px[2], 255]) as u8;
-                    memo.insert(key, i);
-                    i
+            Lookup::Quant { nq, memo } => {
+                let level = if self.dither { BAYER4[y & 3][x & 3] } else { 7 };
+                // The memo runs per (color, threshold level): 16 slots per
+                // color at most, still ~free.
+                let memo_key = key | ((level as u32) << 24);
+                match memo.get(memo_key) {
+                    Some(i) => i,
+                    None => {
+                        let d = level as i32 - 7;
+                        let r = (px[0] as i32 + d).clamp(0, 255) as u8;
+                        let g = (px[1] as i32 + d).clamp(0, 255) as u8;
+                        let b = (px[2] as i32 + d).clamp(0, 255) as u8;
+                        let i = nq.index_of(&[r, g, b, 255]) as u8;
+                        memo.insert(memo_key, i);
+                        i
+                    }
                 }
-            },
+            }
         }
     }
 }
@@ -553,13 +596,19 @@ impl<W: std::io::Write> GifStream<W> {
         idx.clear();
         idx.reserve(rgba.len() / 4);
         // Runs of one color dominate terminal frames; memoizing the last
-        // pixel skips the palette lookup for most of the frame.
-        let mut last = u32::MAX;
+        // pixel skips the palette lookup for most of the frame. Under
+        // dithering the run key carries the Bayer level too, so a run can
+        // still change index as the threshold pattern advances.
+        let w_px = self.width as usize;
+        let dithering = self.palette.dither;
+        let mut last = u64::MAX;
         let mut last_idx = 0u8;
-        for px in rgba.chunks_exact(4) {
-            let key = pack_rgb(px);
+        for (i, px) in rgba.as_chunks::<4>().0.iter().enumerate() {
+            let (x, y) = (i % w_px, i / w_px);
+            let level = if dithering { BAYER4[y & 3][x & 3] } else { 7 };
+            let key = pack_rgb(px) as u64 | ((level as u64) << 32);
             if key != last {
-                last_idx = self.palette.index(px);
+                last_idx = self.palette.index(px, x, y);
                 last = key;
             }
             idx.push(last_idx);
@@ -632,7 +681,8 @@ pub fn encode_gif(frames: &[RgbaFrame], opts: &GifOptions) -> Result<GifReport, 
         builder.feed(&f.data);
     }
     let mut bytes = Vec::new();
-    let mut stream = GifStream::new(&mut bytes, w, h, builder.finish(), opts.looping)?;
+    let mut stream =
+        GifStream::new(&mut bytes, w, h, builder.finish().with_dither(opts.dither), opts.looping)?;
     for f in frames {
         stream.push(&f.data, f.duration_s)?;
     }
@@ -822,12 +872,12 @@ mod tests {
     #[test]
     fn gradient_falls_back_to_quantizer() {
         let mut f = solid(64, 64, [0, 0, 0], 0.5);
-        for (i, px) in f.data.chunks_exact_mut(4).enumerate() {
+        for (i, px) in f.data.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             px[0] = (i % 256) as u8;
             px[1] = (i / 64 % 256) as u8;
             px[2] = (i / 3 % 256) as u8;
         }
-        let rep = encode_gif(&[f], &GifOptions { looping: true, max_colors: 128 }).unwrap();
+        let rep = encode_gif(&[f], &GifOptions { looping: true, max_colors: 128, ..Default::default() }).unwrap();
         assert!(matches!(rep.palette, PaletteMode::Quantized(n) if n <= 128));
     }
 

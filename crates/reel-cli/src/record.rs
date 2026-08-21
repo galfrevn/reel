@@ -146,13 +146,24 @@ pub fn record(out: &Path, size: Option<String>, command: Vec<String>) -> Result<
     // Raw mode needs a real terminal; without one (CI, scripts) we still
     // capture child output fine — there's just no keyboard to pass through.
     let _raw = if crossterm::tty::IsTty::is_tty(&std::io::stdin()) {
+        // With panic = "abort" there is no unwinding, so RawGuard's Drop
+        // never runs on a panic — the user would get back a raw, silent
+        // terminal. Restore cooked mode in the hook before the abort.
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let _ = crossterm::terminal::disable_raw_mode();
+            default_hook(info);
+        }));
         Some(RawGuard::new()?)
     } else {
         None
     };
 
-    // Child output → real terminal + cast.
-    let out_thread = {
+    // Child output → real terminal + cast. `drained_tx` fires when the
+    // reader hits EOF, so shutdown can wait for the tail of the output
+    // without blocking forever on a PTY someone else still holds open.
+    let (drained_tx, drained_rx) = std::sync::mpsc::channel::<()>();
+    {
         let writer = writer.clone();
         std::thread::spawn(move || {
             let mut stdout = std::io::stdout();
@@ -170,8 +181,9 @@ pub fn record(out: &Path, size: Option<String>, command: Vec<String>) -> Result<
                     let _ = writer.lock().unwrap().event(t, "o", &text);
                 }
             }
-        })
-    };
+            let _ = drained_tx.send(());
+        });
+    }
 
     // Real keyboard → child + sidecar. Detached: a blocking stdin read has
     // no portable cancel, and the process exits right after the child does.
@@ -254,7 +266,15 @@ pub fn record(out: &Path, size: Option<String>, command: Vec<String>) -> Result<
 
     let status = child.wait().map_err(|e| anyhow!("waiting for child: {e}"))?;
     done.store(true, Ordering::Relaxed);
-    let _ = out_thread.join();
+    // The reader only EOFs when every slave FD closes. A background process
+    // the session left behind (`some-daemon &`) keeps the PTY open forever —
+    // bound the wait so the user gets their terminal back regardless.
+    if drained_rx.recv_timeout(Duration::from_secs(2)).is_err() {
+        eprintln!(
+            "\rreel record: a background process is keeping the terminal open; \
+             stopping capture here"
+        );
+    }
     drop(_raw);
 
     let input_events = std::mem::take(&mut *inputs.lock().unwrap());
@@ -272,11 +292,10 @@ pub fn record(out: &Path, size: Option<String>, command: Vec<String>) -> Result<
     };
     meta.save_sidecar(out)?;
 
-    // The writer Arc is shared with the output thread (already joined) and
-    // the resize thread (detached but only touches it while !done).
-    if let Ok(m) = Arc::try_unwrap(writer).map(Mutex::into_inner) {
-        m.expect("writer lock").finish()?;
-    }
+    // Detached threads (stdin, resize, possibly a stuck reader) still hold
+    // writer clones, so flush through the lock rather than unwrapping the
+    // Arc — try_unwrap would quietly skip the flush whenever one survives.
+    writer.lock().unwrap().flush()?;
 
     let secs = started.elapsed().as_secs_f64();
     let n_markers = markers.load(Ordering::Relaxed);

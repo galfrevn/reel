@@ -199,6 +199,7 @@ mod tests {
             cells,
             cursor: Cursor { col: cursor.0, row: cursor.1, shape: CursorShape::Block },
             palette_overrides: vec![],
+            default_overrides: [None; 3],
             images: vec![],
         }
     }
