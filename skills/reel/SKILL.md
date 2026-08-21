@@ -226,6 +226,49 @@ is already visible in the terminal.
 in the overlay — but the safe order is still redact first, then enable the
 overlay and re-check.
 
+### Notes: point at a specific cell and say why
+
+`note "text" at (col,row) from T for DUR` floats a callout beside a grid
+coordinate with a leader line to it (`style=bubble` swaps the line for a
+speech tail; `side=` overrides the auto placement). Use it when the demo
+needs *explaining* — the one number that matters in a wall of output, the
+line that proves the fix — and a bottom caption would be too far from it.
+Anchors are cells, so they survive `zoom`, `pan`, and template changes.
+
+Notes, cards, and highlights animate in and out (~0.4s in, ~0.25s out) —
+the leader line draws itself toward the card, the card springs into place,
+a `style=box` highlight strokes itself around the rect. Those ramps are
+drawn at the full frame rate, so each annotation costs ~20 frames; that is
+the price of not looking like a slide deck.
+
+One note at a time. Two callouts fighting for attention is worse than none,
+and a demo carpeted in annotations reads as a slide, not a recording.
+
+### Cards: title and outro frames
+
+`card "text" at T for DUR` inserts output time and scrims the frame with the
+template's canvas color, big text centered — a chapter break for a demo with
+steps, or an outro. `card "github.com/you/thing" at end for 2s` is the outro
+form; it lands after every other still and before `freeze last`.
+
+Only for demos that are genuinely sectioned (install → configure → run) or
+that are going somewhere a call-to-action belongs (a launch post). A 10s
+README GIF does not need a title card in front of it.
+
+### Speed badge and progress bar
+
+Two `[style]` flags, both off by default:
+
+- `speed_badge = true` chips a `▸▸ 5×` while a `speed` ramp plays, so a
+  viewer reads compressed time as deliberate. It slides in and out with the
+  ramp, which costs a handful of frames per ramp — nothing next to the
+  frames the ramp itself removes. Worth suggesting whenever a demo has a
+  big ramp in it.
+- `progress = true` burns a thin bar (notched at each marker) into the
+  bottom of the frame. It answers "where does this loop restart?" for long
+  GIFs. It costs frames: the bar is quantized to 120 steps, so it adds up
+  to ~120 frames to the video. Check the reported size after turning it on.
+
 ## Choosing a look
 
 Templates are an open set: six built-ins ship in the binary, users install

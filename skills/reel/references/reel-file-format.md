@@ -41,6 +41,10 @@ line_height = 1.4
 window      = "macos"    # macos | rounded | plain | none
 padding     = 48
 cursor_blink = false     # override the template's cursor blink
+speed_badge = true       # default false: chip a `▸▸ 5×` while a speed ramp plays
+progress    = true       # default false: burn a progress bar (notched at each marker)
+                         # into the bottom of the frame. Costs frames — the bar is
+                         # quantized to 120 steps, so it adds at most ~120 to a video.
 
 [output]
 aspect = "16:9"          # optional: grow (never crop) the canvas to a ratio; window stays centered
@@ -137,7 +141,22 @@ path   = "short"               # none | short | full
 cursor_slide = true            # cursor slides between cells, Neovide-style
 slide_ms     = 90.0
 typing_glow  = 0.5             # freshly typed cells glow and decay, 0..1
+
+[overlay]                      # steering for note/card/chip/progress-bar drawing
+bg      = "#1e1e2e"            # card & chip fill (default: the theme bg, lifted)
+fg      = "#cdd6f4"            # their text (default: the theme fg)
+accent  = "#ff9e64"            # leader lines, highlight boxes, progress fill
+                               # (default: the cursor color)
+radius  = 10.0                 # card corner radius in px (default 8)
+opacity = 0.98                 # card/chip background alpha (default 0.98)
+                               # Cards are drawn as elevated surfaces: a soft
+                               # shadow and a hairline edge, no colored outline.
+                               # `accent` colors the leader line, the anchor
+                               # dot, highlight boxes, and the progress fill.
 ```
+
+Every `[overlay]` field is optional and derives from the resolved theme when
+unset, so overlays match a template's look without it restating its palette.
 
 `[prompt]` only affects `reel run` — reel launches that shell itself, so
 bare `bash`/`zsh` start without rc files and the branded prompt survives.
@@ -172,7 +191,13 @@ the recording even if you later `cut 10s..20s`. Durations (`for 2.5s`,
 | `cut` | `cut A..B` | Remove the range, join the seam |
 | `speed` | `speed Nx from A to B` | Time-compress (or expand, N<1) a region; N may be fractional, e.g. `2.5x` |
 | `hold` | `hold DUR at T` | Insert a still pause at T |
+| `card` | `card "text" at T for DUR` | Insert a full-frame title card at T |
 | `freeze` | `freeze last DUR` | Hold the final frame before the loop restarts |
+
+`card` is a `hold` with words on it: it inserts output time (the frame under
+it freezes) and scrims the canvas with the template's background, so the
+still ghosts through. `card "…" at end for 2s` is the outro form — it lands
+after every other still and before whatever `freeze last` appends.
 
 Constraints enforced at parse/resolve time: `speed` regions must not overlap
 each other; `trim` must lie inside the recording. Errors name the line number.
@@ -184,7 +209,8 @@ each other; `trim` must lie inside the recording. Errors name the line number.
 | `zoom` | `zoom Nx at (col,row) [from A to B]` | Ease into a grid region; without a range it applies to the whole demo |
 | `pan` | `pan to (col,row) from A to B` | Move the zoom viewport while zoomed |
 | `caption` | `caption "text" at T for DUR [pos=bottom\|top\|center]` | Styled text overlay (default `pos=bottom`) |
-| `highlight` | `highlight (col,row,w,h) at T for DUR` | Dim everything except the rect |
+| `highlight` | `highlight (col,row,w,h) at T for DUR [style=spotlight\|box\|underline]` | Mark a rect: dim around it (default), stroke a box, or underline it |
+| `note` | `note "text" at (col,row) from T for DUR [style=card\|bubble] [side=auto\|up\|down\|left\|right]` | A callout anchored to a cell, pointing at it |
 | `marker` | `marker "label" at T` | Name a moment; reference it as `@label` in any time |
 | `keys` | `keys on` or `keys A..B` | Show recorded keystrokes as chips (screenkey-style) |
 
@@ -193,9 +219,20 @@ group into one chip (`cargo test`), special keys get symbols (`⏎` `⇥` `⌫`
 `↑` `^C` …), and each chip lingers ~1.2 s. Chips whose footage is cut or
 trimmed away disappear with it. Terminal query responses are filtered out.
 
-Zoom coordinates are **grid cells** (column, row), not pixels — they survive
-font-size and template changes. Text is re-rasterized at the zoomed size, so
-it stays sharp.
+`note` places a card (leader line plus a dot on the cell) or a speech bubble
+(tail pointing at the cell) next to the coordinate it names, wrapping the
+text to fit. It arrives with motion — the leader draws itself out from the
+anchor while the card springs into place from that direction, and a
+`style=box` highlight strokes itself around its rect. Entrances run ~0.38s,
+exits ~0.26s, drawn at the full frame rate; a window shorter than that
+splits what time it has between the two ramps. `side=auto` puts it wherever there is the most room. Like
+`caption` it is authored rather than recorded, so an anchor that falls inside
+a `cut` snaps to the seam instead of disappearing.
+
+Zoom, highlight, and note coordinates are **grid cells** (column, row), not
+pixels — they survive font-size and template changes, and they stay glued to
+their cell while `zoom`/`pan` move the camera. Text is re-rasterized at the
+zoomed size, so it stays sharp.
 
 ### Redaction
 

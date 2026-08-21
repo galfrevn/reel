@@ -76,6 +76,33 @@ What stopped the effort, in order of importance:
 
 Sixel capture needs no flag and already works.
 
+## Annotation
+
+The layer that turns a recording into an explanation shipped: `note` (a
+callout anchored to a grid cell, as a card with a leader line or a bubble
+with a tail), `card` (a full-frame title or outro that inserts output time),
+`highlight style=spotlight|box|underline`, an opt-in `▸▸ 5×` badge over
+speed ramps, and an opt-in progress bar notched at every marker. All of it
+composites after rasterization, styleable from a template's `[overlay]`
+table, and anchored in cells so `zoom`/`pan` carry it.
+
+What's next in the same direction, roughly in order of value per unit of
+work:
+
+- **Scroll smoothing** — TUIs jump a line at a time; interpolating the
+  scroll between snapshots is the biggest perceived-quality win left, and it
+  lives entirely in the rasterizer. It adds frames, so it belongs behind a
+  `[motion]` flag like the rest.
+- **`zoom auto`** — frame whatever changed, reusing the changed-cell
+  tracking that already feeds the typing glow. Removes the coordinate
+  guesswork an agent has to do today.
+- **`blur`/`pixelate` a region** — the visual half of `redact`, for what no
+  pattern can match.
+- **Transitions on `cut`** — a short dissolve or flash so a jump reads as
+  intentional rather than as a dropped frame.
+- **Social aspect presets** — `format = "vertical"`/`"square"` letterboxing
+  the window with the caption above it.
+
 ## Output formats
 
 - **APNG / animated WebP** — better than GIF where supported, cheap to add on
