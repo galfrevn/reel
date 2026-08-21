@@ -7,6 +7,11 @@ on:
 permissions:
   contents: write
 
+env:
+  # The libvpx reel is developed against. env-libvpx-sys requires
+  # VPX_VERSION whenever VPX_LIB_DIR is set.
+  VPX_VERSION: "1.16.0"
+
 jobs:
   # A tag on a broken commit must not ship; a v0.2.0 tag must not ship a
   # binary that reports 0.1.1.
@@ -47,17 +52,42 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install libvpx (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libvpx-dev libclang-dev
-      - name: Install libvpx (macOS)
-        if: runner.os == 'macOS'
-        run: brew install libvpx
+      - name: Install build tools
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y libclang-dev nasm
+          else
+            brew install nasm
+          fi
 
-      - name: Build (static libvpx)
+      # Built from source rather than taken from the package manager.
+      # `VPX_STATIC=1` on its own does nothing here: it only reaches
+      # pkg-config-rs, which refuses to link a library statically when it
+      # lives under a system root, so an apt/brew libvpx always comes out
+      # dynamic. v0.1.1 shipped static only because that runner image
+      # happened to carry no shared libvpx for the linker to prefer — an
+      # accident that broke the moment the image updated. Setting
+      # VPX_LIB_DIR takes env-libvpx-sys's other branch, which emits
+      # `rustc-link-lib=static=vpx` outright.
+      - name: Build libvpx from source (static only)
+        run: |
+          set -eu
+          curl -fsSL "https://github.com/webmproject/libvpx/archive/refs/tags/v${VPX_VERSION}.tar.gz" | tar xz
+          cd "libvpx-${VPX_VERSION}"
+          ./configure --prefix="$HOME/libvpx" \
+            --enable-static --disable-shared --enable-pic \
+            --disable-examples --disable-tools --disable-docs --disable-unit-tests
+          make -j"$(getconf _NPROCESSORS_ONLN)"
+          make install
+          # No .so/.dylib is produced at all, so there is nothing for the
+          # linker to fall back to even if a flag were wrong.
+          ls "$HOME/libvpx/lib"
+          echo "VPX_LIB_DIR=$HOME/libvpx/lib" >> "$GITHUB_ENV"
+          echo "VPX_INCLUDE_DIR=$HOME/libvpx/include" >> "$GITHUB_ENV"
+
+      - name: Build
         env:
-          # pkg-config-rs rule: link libvpx statically so the released
-          # binary keeps the single-file promise.
           VPX_STATIC: "1"
         run: cargo build --release --target ${{ matrix.target }} -p reel-cli
 
